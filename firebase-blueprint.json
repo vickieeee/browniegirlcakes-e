@@ -1,0 +1,192 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "User Profile",
+      "description": "Profile information and preferences for registered members",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "maxLength": 128 },
+        "displayName": { "type": "string", "maxLength": 100 },
+        "email": { "type": "string", "maxLength": 120 },
+        "photoURL": { "type": "string", "maxLength": 500 },
+        "role": { "type": "string", "enum": ["customer", "admin"] },
+        "createdAt": { "type": "string" },
+        "favorites": { "type": "array" }
+      },
+      "required": ["uid", "email"]
+    },
+    "ClassRegistration": {
+      "title": "Baking Class Registration",
+      "description": "Interest registrations for brownie making classes",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "maxLength": 128 },
+        "userEmail": { "type": "string", "maxLength": 120 },
+        "userName": { "type": "string", "maxLength": 100 },
+        "className": { "type": "string", "maxLength": 150 },
+        "preferredDate": { "type": "string", "maxLength": 50 },
+        "notes": { "type": "string", "maxLength": 500 },
+        "status": { "type": "string", "enum": ["registered", "waitlist", "cancelled"] },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["userId", "userEmail", "className", "status", "createdAt"]
+    },
+    "Inquiry": {
+      "title": "Customer Inquiry",
+      "description": "Contact inquiries for custom brownies, catering, or questions",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "maxLength": 128 },
+        "userEmail": { "type": "string", "maxLength": 120 },
+        "userName": { "type": "string", "maxLength": 100 },
+        "userPhone": { "type": "string", "maxLength": 50 },
+        "subject": { "type": "string", "maxLength": 300 },
+        "message": { "type": "string", "maxLength": 4000 },
+        "status": { "type": "string", "enum": ["new", "read", "replied", "closed"] },
+        "isRead": { "type": "boolean" },
+        "readAt": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["userId", "userEmail", "subject", "message", "status", "createdAt"]
+    },
+    "SiteSettings": {
+      "title": "Website Settings",
+      "description": "Global website configuration for contact info, images, and social handles",
+      "type": "object",
+      "properties": {
+        "phone": { "type": "string", "maxLength": 50 },
+        "phoneRaw": { "type": "string", "maxLength": 30 },
+        "email": { "type": "string", "maxLength": 120 },
+        "instagramId": { "type": "string", "maxLength": 100 },
+        "facebookId": { "type": "string", "maxLength": 100 },
+        "aboutImage": { "type": "string", "maxLength": 900000 },
+        "heroSlide1Image": { "type": "string", "maxLength": 900000 },
+        "heroSlide2Image": { "type": "string", "maxLength": 900000 },
+        "heroSlide3Image": { "type": "string", "maxLength": 900000 },
+        "onlineClassTime": { "type": "string", "maxLength": 200 },
+        "updatedAt": { "type": "string" }
+      }
+    },
+    "MenuItem": {
+      "title": "Bakery Menu Item",
+      "description": "Cake menu item (Normal or Premium flavours), artisan brownie, assorted box, frosted brownie, or bento cake listed on the website",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 100 },
+        "subtitle": { "type": "string", "maxLength": 100 },
+        "description": { "type": "string", "maxLength": 500 },
+        "price": { "type": "string", "maxLength": 30 },
+        "priceHalfKg": { "type": "string", "maxLength": 30 },
+        "priceOneKg": { "type": "string", "maxLength": 30 },
+        "category": { "type": "string", "enum": ["cake_normal", "cake_premium", "brownie", "assorted_box", "frosted_brownie", "bento_cake"] },
+        "image": { "type": "string", "maxLength": 900000 },
+        "badge": { "type": "string", "maxLength": 50 },
+        "cocoaPercentage": { "type": "string", "maxLength": 30 },
+        "flavorNotes": { "type": "array" },
+        "sortOrder": { "type": "number" },
+        "enabled": { "type": "boolean" }
+      },
+      "required": ["name", "price", "image"]
+    },
+    "BakingClass": {
+      "title": "Baking Class Schedule",
+      "description": "Masterclass offerings, pricing, and available batch times",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 150 },
+        "level": { "type": "string", "maxLength": 50 },
+        "duration": { "type": "string", "maxLength": 50 },
+        "price": { "type": "string", "maxLength": 30 },
+        "format": { "type": "string", "enum": ["Online", "Offline"] },
+        "description": { "type": "string", "maxLength": 500 },
+        "dates": { "type": "array" }
+      },
+      "required": ["title", "price", "dates"]
+    },
+    "Achievements": {
+      "title": "Bakery Achievements",
+      "description": "Milestones, metrics, and industry awards",
+      "type": "object",
+      "properties": {
+        "stat1Value": { "type": "string", "maxLength": 50 },
+        "stat1Label": { "type": "string", "maxLength": 100 },
+        "stat2Value": { "type": "string", "maxLength": 50 },
+        "stat2Label": { "type": "string", "maxLength": 100 },
+        "stat3Value": { "type": "string", "maxLength": 50 },
+        "stat3Label": { "type": "string", "maxLength": 100 },
+        "stat4Value": { "type": "string", "maxLength": 50 },
+        "stat4Label": { "type": "string", "maxLength": 100 },
+        "award1Title": { "type": "string", "maxLength": 150 },
+        "award1Org": { "type": "string", "maxLength": 150 },
+        "award2Title": { "type": "string", "maxLength": 150 },
+        "award2Org": { "type": "string", "maxLength": 150 },
+        "award3Title": { "type": "string", "maxLength": 150 },
+        "award3Org": { "type": "string", "maxLength": 150 }
+      }
+    },
+    "Order": {
+      "title": "Brownie Delivery Order",
+      "description": "Multi-product artisan brownie delivery order and live status tracker",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 50 },
+        "orderId": { "type": "string", "maxLength": 50 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "customerName": { "type": "string", "maxLength": 100 },
+        "customerEmail": { "type": "string", "maxLength": 120 },
+        "customerPhone": { "type": "string", "maxLength": 50 },
+        "items": { "type": "array" },
+        "totalAmount": { "type": "string", "maxLength": 30 },
+        "totalAmountNumeric": { "type": "number" },
+        "status": {
+          "type": "string",
+          "enum": ["received", "baking", "finishing", "out_for_delivery", "delivered", "cancelled"]
+        },
+        "statusMessage": { "type": "string", "maxLength": 300 },
+        "estimatedDelivery": { "type": "string", "maxLength": 100 },
+        "deliveryAddress": { "type": "string", "maxLength": 300 },
+        "specialInstructions": { "type": "string", "maxLength": 500 },
+        "driverName": { "type": "string", "maxLength": 100 },
+        "driverPhone": { "type": "string", "maxLength": 50 },
+        "hasFrostedAddon": { "type": "boolean" },
+        "isRead": { "type": "boolean" },
+        "readAt": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["orderId", "status", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User profile documents indexed by auth UID"
+    },
+    "/class_registrations/{registrationId}": {
+      "schema": "ClassRegistration",
+      "description": "Baking class interest and registrations"
+    },
+    "/inquiries/{inquiryId}": {
+      "schema": "Inquiry",
+      "description": "Customer contact submissions"
+    },
+    "/settings/{settingId}": {
+      "schema": "SiteSettings",
+      "description": "Global website settings documents (general, achievements)"
+    },
+    "/menu_items/{itemId}": {
+      "schema": "MenuItem",
+      "description": "Customizable brownie, assorted box, frosted brownie, and bento cake menu items"
+    },
+    "/baking_classes/{classId}": {
+      "schema": "BakingClass",
+      "description": "Baking masterclasses and schedule times"
+    },
+    "/orders/{orderId}": {
+      "schema": "Order",
+      "description": "Customer multi-product brownie orders and live delivery tracking state"
+    }
+  }
+}

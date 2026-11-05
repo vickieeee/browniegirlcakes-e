@@ -1,0 +1,153 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email in ['vigneshsivan2001@gmail.com', 'preethipreethu712@gmail.com'] ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin') ||
+        (exists(/databases/$(database)/documents/settings/admins) && request.auth.token.email in get(/databases/$(database)/documents/settings/admins).data.adminEmails) ||
+        request.auth.uid != null
+      );
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Health check / test connection
+    match /test/connection {
+      allow read: if true;
+    }
+
+    // Global Website Settings (General contact info, social handles, images, achievements)
+    match /settings/{settingId} {
+      allow read: if true;
+      allow write: if isValidId(settingId);
+    }
+
+    // Brownie, Assorted Box, Frosted Brownie & Bento Cake Menu Items
+    match /menu_items/{itemId} {
+      allow read: if true;
+      allow create, update: if isValidId(itemId) &&
+        incoming().name is string && incoming().name.size() <= 150 &&
+        incoming().price is string && incoming().price.size() <= 40 &&
+        incoming().image is string && incoming().image.size() <= 950000;
+      allow delete: if isValidId(itemId);
+    }
+
+    // Custom Showcase Brownie Items
+    match /custom_items/{itemId} {
+      allow read: if true;
+      allow write: if isValidId(itemId);
+    }
+
+    // Baking Classes & Times
+    match /baking_classes/{classId} {
+      allow read: if true;
+      allow write: if isValidId(classId);
+    }
+
+    // Users Collection
+    match /users/{userId} {
+      allow get: if isOwner(userId) || isAdmin();
+      allow list: if isAdmin();
+      allow create: if isOwner(userId) &&
+        incoming().uid == userId &&
+        incoming().email == request.auth.token.email &&
+        incoming().keys().hasOnly(['uid', 'displayName', 'email', 'photoURL', 'role', 'createdAt', 'favorites']) &&
+        incoming().keys().hasAll(['uid', 'email']) &&
+        (incoming().role == 'customer' || (incoming().role == 'admin' && isAdmin())) &&
+        (!('displayName' in incoming()) || (incoming().displayName is string && incoming().displayName.size() <= 100)) &&
+        (!('photoURL' in incoming()) || (incoming().photoURL is string && incoming().photoURL.size() <= 500));
+
+      allow update: if (isOwner(userId) || isAdmin()) &&
+        incoming().uid == existing().uid &&
+        incoming().email == existing().email &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'favorites', 'role']) &&
+        (incoming().role == existing().role || isAdmin());
+
+      allow delete: if isAdmin();
+    }
+
+    // Class Registrations Collection
+    match /class_registrations/{registrationId} {
+      allow read: if true;
+      allow list: if true;
+
+      allow create: if isValidId(registrationId) &&
+        incoming().keys().hasOnly(['userId', 'userEmail', 'userName', 'className', 'preferredDate', 'notes', 'status', 'createdAt']) &&
+        incoming().keys().hasAll(['userId', 'userEmail', 'className', 'status', 'createdAt']) &&
+        incoming().className is string && incoming().className.size() <= 150 &&
+        incoming().status in ['registered', 'waitlist', 'cancelled'];
+
+      allow update: if isValidId(registrationId);
+      allow delete: if isValidId(registrationId);
+    }
+
+    // Inquiries Collection
+    match /inquiries/{inquiryId} {
+      allow read: if true;
+      allow list: if true;
+
+      allow create: if isValidId(inquiryId) &&
+        incoming().keys().hasOnly(['userId', 'userEmail', 'userName', 'userPhone', 'subject', 'message', 'status', 'createdAt', 'isRead', 'readAt']) &&
+        incoming().keys().hasAll(['userId', 'userEmail', 'subject', 'message', 'status', 'createdAt']) &&
+        incoming().subject is string && incoming().subject.size() <= 300 &&
+        incoming().message is string && incoming().message.size() <= 4000 &&
+        incoming().status in ['new', 'read', 'replied', 'closed'];
+
+      allow update: if isValidId(inquiryId);
+      allow delete: if isValidId(inquiryId);
+    }
+
+    // Orders Collection (Multi-Product Cart Orders & Order Status Tracker)
+    match /orders/{orderId} {
+      // Allow single document get by orderId so customers can track their delivery status
+      allow get: if isValidId(orderId);
+      // Allow admin dashboard (including password-authenticated sessions) and signed-in users to list orders
+      allow list: if true;
+
+      allow create: if isValidId(orderId) &&
+        incoming().keys().hasOnly([
+          'id', 'orderId', 'userId', 'customerName', 'customerEmail', 'customerPhone',
+          'items', 'totalAmount', 'totalAmountNumeric', 'status', 'statusMessage',
+          'estimatedDelivery', 'deliveryAddress', 'driverName', 'driverPhone',
+          'createdAt', 'updatedAt', 'specialInstructions', 'hasFrostedAddon',
+          'isRead', 'readAt'
+        ]) &&
+        incoming().keys().hasAll(['orderId', 'status', 'createdAt']) &&
+        incoming().orderId is string && incoming().orderId.size() <= 50 &&
+        incoming().status in ['received', 'baking', 'finishing', 'out_for_delivery', 'delivered', 'cancelled'] &&
+        (!('items' in incoming()) || (incoming().items is list && incoming().items.size() <= 50));
+
+      allow update: if isValidId(orderId) &&
+        incoming().status in ['received', 'baking', 'finishing', 'out_for_delivery', 'delivered', 'cancelled'];
+
+      allow delete: if isValidId(orderId);
+    }
+  }
+}

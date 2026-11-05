@@ -1,0 +1,64 @@
+Act as a senior frontend engineer, React/TypeScript architect, and premium e-commerce UI/UX designer.
+
+PROJECT
+I have an existing BrownieGirlCakes website built with React/TSX. It includes a public storefront, product/menu sections, an Admin Panel, and existing product data and cart functionality. I want to update ONLY the product card UI using the attached HTML/CSS reference files.
+
+DESIGN DIRECTION
+Create a premium artisan bakery look: warm, elegant, minimal, appetizing, and readable. Use this existing brand palette:
+- Chocolate brown: #3B211B
+- Warm cream: #F8F0E5
+- Caramel: #C47B55
+- Soft beige: #E8D6C3
+- Card surface: warm off-white such as #FFFAF4
+
+CARD CONTENT
+Each brownie product card should support:
+- Product image with consistent aspect ratio and object-fit: cover
+- Optional badge such as Bestseller / New / Premium, shown only when the product data provides it
+- Product name
+- Short product description
+- Optional product details such as collection/flavour/quantity, only if available in the existing data
+- Price, formatted using the existing project conventions and Indian rupees where appropriate
+- Existing Add to Cart action
+- Optional wishlist/favorite control ONLY if the project already supports it; do not add a fake non-functional control
+
+FUNCTIONAL REQUIREMENTS — CRITICAL
+1. First inspect the existing project structure and identify the current product card component, product data model, menu section, cart handler, and Admin Panel data flow.
+2. Reuse the existing product data fields and existing components wherever possible. Do not create duplicate product data or hardcode sample products/prices.
+3. Preserve all existing Add to Cart behavior, quantity/variant selection, product IDs, cart state, checkout flow, and event handlers.
+4. Product images, names, descriptions, prices, badges, and availability must continue to come dynamically from the existing Admin Panel/database/API state. Do not replace this with static HTML.
+5. Do not change backend APIs, database schemas, Firebase configuration, authentication, routes, or Admin Panel functionality.
+6. Do not remove or rename existing props, exports, IDs, handlers, or CSS classes that other parts of the app depend on unless you verify they are unused and explain the change.
+7. Avoid global CSS selectors that could affect other pages. Use scoped class names such as `brownie-card__...` or CSS modules consistent with the existing project.
+8. Make the card responsive and ensure a clean grid on desktop, tablet, and mobile. Keep image heights consistent and text readable.
+9. Add subtle hover elevation/image zoom, accessible focus states, semantic buttons, useful alt text, and reduced-motion support.
+10. If a required field is missing, gracefully hide that optional element rather than showing undefined, null, placeholder prices, or broken images.
+
+IMPLEMENTATION PROCESS
+- Inspect the codebase before editing.
+- Identify the exact files that need changes.
+- Make the smallest safe set of changes.
+- Adapt the supplied HTML/CSS reference into the existing React/TSX component. Do NOT paste a standalone HTML document into a React component.
+- Keep the project's existing styling approach (CSS, CSS module, Tailwind, etc.) rather than introducing a new styling dependency.
+- If the project uses TypeScript, maintain correct types and avoid `any` unless already required by the codebase.
+- Do not install new packages unless absolutely necessary.
+
+VALIDATION
+After implementation:
+- Run the available build/lint/test commands from package.json.
+- Fix errors caused by your changes.
+- Verify the product grid still renders products from the existing data source.
+- Verify Add to Cart still works.
+- Verify Admin Panel product updates are reflected on the public storefront.
+- Check desktop and mobile layouts.
+- Report any checks you could not run; never claim a test passed unless it actually ran successfully.
+
+DELIVERABLE
+Apply the changes directly to the existing project files. Then provide:
+1. A concise list of files changed.
+2. What changed in the UI.
+3. Confirmation of which existing functionality was preserved.
+4. Build/test results, including any failures or checks not run.
+5. Any manual steps I need to complete.
+
+IMPORTANT: Do not rebuild the website, do not redesign unrelated sections, and do not make assumptions about the existing data model. If you cannot identify the correct component or cart handler, stop and ask me for the relevant file rather than inventing a replacement.
