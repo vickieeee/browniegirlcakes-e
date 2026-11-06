@@ -31,9 +31,33 @@ import { runFirebaseToMongoMigration } from './src/lib/firebaseToMongoMigration'
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Load Firebase metadata for health diagnostics
-const firebaseConfigPath = path.join(__dirname, 'firebase-applet-config.json');
-const firebaseConfig = JSON.parse(fs.readFileSync(firebaseConfigPath, 'utf-8'));
+// Load Firebase metadata for health diagnostics (resilient across root and /var/task/api)
+const loadFirebaseConfig = (): { projectId: string; firestoreDatabaseId: string } => {
+  const candidatePaths = [
+    path.join(__dirname, 'firebase-applet-config.json'),
+    path.join(__dirname, '..', 'firebase-applet-config.json'),
+    path.join(process.cwd(), 'firebase-applet-config.json'),
+  ];
+  for (const candidate of candidatePaths) {
+    try {
+      if (fs.existsSync(candidate)) {
+        const parsed = JSON.parse(fs.readFileSync(candidate, 'utf-8'));
+        return {
+          projectId: parsed.projectId || 'extreme-spark-dxctm',
+          firestoreDatabaseId:
+            parsed.firestoreDatabaseId || 'ai-studio-75f70547-1c2b-4420-ac3a-f6b892c5187e',
+        };
+      }
+    } catch {
+      // Try next candidate path
+    }
+  }
+  return {
+    projectId: 'extreme-spark-dxctm',
+    firestoreDatabaseId: 'ai-studio-75f70547-1c2b-4420-ac3a-f6b892c5187e',
+  };
+};
+const firebaseConfig = loadFirebaseConfig();
 
 export interface OrderProductEntry {
   productId: string;
@@ -2637,8 +2661,7 @@ export function createExpressApiApp(): express.Express {
   return app;
 }
 
-async function startServer() {
-  const app = createExpressApiApp();
+async function startServer(app: express.Express) {
   const PORT = Number(process.env.PORT) || 3000;
 
   // ============================================================================
@@ -2650,7 +2673,11 @@ async function startServer() {
   if (!isProd) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: false,
+        watch: null,
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -2666,6 +2693,14 @@ async function startServer() {
   });
 }
 
-if (!process.env.VERCEL) {
-  startServer();
+const app = createExpressApiApp();
+export default app;
+
+const normalizedEntryFilename = __filename.replace(/\\/g, '/');
+const isServerlessRuntime =
+  Boolean(process.env.VERCEL) || normalizedEntryFilename.endsWith('/api/index.js');
+
+if (!isServerlessRuntime) {
+  startServer(app);
 }
+

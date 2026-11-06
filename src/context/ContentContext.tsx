@@ -1,12 +1,4 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import {
-  doc,
-  collection,
-  onSnapshot,
-  setDoc,
-  deleteDoc,
-} from 'firebase/firestore';
-import { db } from '../firebase';
 import { useAuth } from './AuthContext';
 import { SIGNATURE_BROWNIES, BAKING_CLASSES, BrownieItem, BakingClassInfo } from '../data/brownies';
 import { formatRupee, OFFICIAL_INSTAGRAM_URL } from '../utils/formatters';
@@ -627,304 +619,6 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
     };
   }, []);
 
-  // 1. Sync Settings from Firestore
-  useEffect(() => {
-    const settingsDocRef = doc(db, 'settings', 'general');
-    const unsubscribe = onSnapshot(
-      settingsDocRef,
-      (docSnap) => {
-        if (docSnap.exists()) {
-          const raw = docSnap.data();
-          if (
-            !raw.email ||
-            raw.email === 'hello@browniegirlcakes.com' ||
-            raw.email === 'admin@browinegirlcakes.com'
-          ) {
-            raw.email = 'preethipreethu712@gmail.com';
-            setDoc(settingsDocRef, { email: 'preethipreethu712@gmail.com' }, { merge: true }).catch(() => {});
-          }
-          const remoteData = { ...DEFAULT_SETTINGS, ...raw } as SiteSettings;
-          setSettings(remoteData);
-          try {
-            localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(remoteData));
-          } catch {}
-        }
-      },
-      () => {}
-    );
-
-    return () => unsubscribe();
-  }, []);
-
-  // 2. Sync Achievements from Firestore
-  useEffect(() => {
-    const achDocRef = doc(db, 'settings', 'achievements');
-    const unsubscribe = onSnapshot(
-      achDocRef,
-      (docSnap) => {
-        if (docSnap.exists()) {
-          const remoteData = { ...DEFAULT_ACHIEVEMENTS, ...docSnap.data() } as AchievementSettings;
-          setAchievements(remoteData);
-          try {
-            localStorage.setItem(STORAGE_KEYS.ACHIEVEMENTS, JSON.stringify(remoteData));
-          } catch {}
-        }
-      },
-      () => {}
-    );
-
-    return () => unsubscribe();
-  }, []);
-
-  // 3. Sync Menu Items from Firestore (preserving canonical positions & local edits)
-  useEffect(() => {
-    const menuColRef = collection(db, 'menu_items');
-    const unsubscribe = onSnapshot(
-      menuColRef,
-      (snapshot) => {
-        // Read any locally cached items so local photo uploads are never lost
-        let localCached: BrownieItem[] = [];
-        try {
-          const rawLocal = localStorage.getItem(STORAGE_KEYS.MENU);
-          if (rawLocal) {
-            const parsed = JSON.parse(rawLocal);
-            if (Array.isArray(parsed)) localCached = parsed;
-          }
-        } catch {}
-
-        if (!snapshot.empty) {
-          const remoteById = new Map<string, BrownieItem>();
-          snapshot.forEach((d) => {
-            const raw = d.data() as BrownieItem;
-            const id = d.id || raw.id;
-            remoteById.set(id, {
-              ...raw,
-              id,
-            });
-          });
-
-          // Combine defaults + localStorage cache + remote Firestore docs + in-memory session edits
-          const combinedMap = new Map<string, BrownieItem>();
-          for (const loc of localCached) {
-            if (loc && loc.id) combinedMap.set(loc.id, loc);
-          }
-          remoteById.forEach((rem, id) => {
-            const defaultRef = SIGNATURE_BROWNIES.find((d) => d.id === id);
-            const existingLoc = combinedMap.get(id);
-            combinedMap.set(id, {
-              ...(defaultRef || {}),
-              ...(existingLoc || {}),
-              ...rem,
-              name:
-                typeof rem.name === 'string' && rem.name.trim().length > 0
-                  ? rem.name
-                  : existingLoc?.name || defaultRef?.name || 'Artisan Creation',
-              image:
-                typeof rem.image === 'string' && rem.image.trim().length > 0
-                  ? rem.image
-                  : existingLoc?.image || defaultRef?.image || DEFAULT_FALLBACK_IMAGE,
-            });
-          });
-          localEditsMapRef.current.forEach((sessionItem, id) => {
-            const current = combinedMap.get(id);
-            combinedMap.set(id, { ...(current || {}), ...sessionItem });
-          });
-
-          const merged = normalizeAndMergeMenuItems(Array.from(combinedMap.values()));
-          menuItemsRef.current = merged;
-          setMenuItems(merged);
-          persistMenuToLocalStorage(merged);
-        } else if (localCached.length > 0 || localEditsMapRef.current.size > 0) {
-          const combinedMap = new Map<string, BrownieItem>();
-          for (const loc of localCached) {
-            if (loc && loc.id) combinedMap.set(loc.id, loc);
-          }
-          localEditsMapRef.current.forEach((sessionItem, id) => {
-            const current = combinedMap.get(id);
-            combinedMap.set(id, { ...(current || {}), ...sessionItem });
-          });
-          const merged = normalizeAndMergeMenuItems(Array.from(combinedMap.values()));
-          menuItemsRef.current = merged;
-          setMenuItems(merged);
-        } else {
-          const merged = normalizeAndMergeMenuItems(SIGNATURE_BROWNIES);
-          menuItemsRef.current = merged;
-          setMenuItems(merged);
-        }
-      },
-      () => {}
-    );
-
-    return () => unsubscribe();
-  }, []);
-
-  // 4. Sync Baking Classes from Firestore
-  useEffect(() => {
-    const classesColRef = collection(db, 'baking_classes');
-    const unsubscribe = onSnapshot(
-      classesColRef,
-      (snapshot) => {
-        const deletedIds = getDeletedClassIds();
-        let localCached: BakingClassInfo[] = [];
-        try {
-          const rawLocal = localStorage.getItem(STORAGE_KEYS.CLASSES);
-          if (rawLocal) {
-            const parsed = JSON.parse(rawLocal);
-            if (Array.isArray(parsed)) localCached = parsed;
-          }
-        } catch {}
-
-        if (!snapshot.empty) {
-          const combinedById = new Map<string, BakingClassInfo>();
-          localCached.forEach((loc) => {
-            if (loc && loc.id && !deletedIds.includes(loc.id)) {
-              combinedById.set(loc.id, loc);
-            }
-          });
-
-          snapshot.forEach((d) => {
-            const raw = d.data() as BakingClassInfo;
-            const classId = d.id || raw.id;
-            if (!deletedIds.includes(classId)) {
-              const existingLoc = combinedById.get(classId);
-              combinedById.set(classId, {
-                ...(existingLoc || {}),
-                ...raw,
-                id: classId,
-                price: formatRupee(raw.price || existingLoc?.price || '₹1,999'),
-                dates: Array.isArray(raw.dates)
-                  ? raw.dates
-                  : Array.isArray(existingLoc?.dates)
-                  ? existingLoc.dates
-                  : BAKING_CLASSES.find((b) => b.id === classId)?.dates || [],
-              });
-            }
-          });
-
-          localClassEditsMapRef.current.forEach((editedCls, id) => {
-            if (!deletedIds.includes(id)) {
-              const current = combinedById.get(id);
-              combinedById.set(id, { ...(current || {}), ...editedCls });
-            }
-          });
-
-          const clsList = Array.from(combinedById.values());
-          bakingClassesRef.current = clsList;
-          setBakingClasses(clsList);
-          try {
-            localStorage.setItem(STORAGE_KEYS.CLASSES, JSON.stringify(clsList));
-          } catch {}
-        } else if (localClassEditsMapRef.current.size > 0 || localCached.length > 0) {
-          const combinedById = new Map<string, BakingClassInfo>();
-          localCached.forEach((loc) => {
-            if (loc && loc.id && !deletedIds.includes(loc.id)) {
-              combinedById.set(loc.id, loc);
-            }
-          });
-          localClassEditsMapRef.current.forEach((editedCls, id) => {
-            if (!deletedIds.includes(id)) {
-              const current = combinedById.get(id);
-              combinedById.set(id, { ...(current || {}), ...editedCls });
-            }
-          });
-          const clsList = Array.from(combinedById.values());
-          bakingClassesRef.current = clsList;
-          setBakingClasses(clsList);
-          try {
-            localStorage.setItem(STORAGE_KEYS.CLASSES, JSON.stringify(clsList));
-          } catch {}
-        } else {
-          const defaultClasses = BAKING_CLASSES.filter((c) => !deletedIds.includes(c.id));
-          bakingClassesRef.current = defaultClasses;
-          setBakingClasses(defaultClasses);
-          try {
-            localStorage.setItem(STORAGE_KEYS.CLASSES, JSON.stringify(defaultClasses));
-          } catch {}
-        }
-      },
-      () => {}
-    );
-
-    return () => unsubscribe();
-  }, []);
-
-  // 5. Sync Custom Showcase Brownies from Firestore
-  useEffect(() => {
-    const customColRef = collection(db, 'custom_items');
-    const unsubscribe = onSnapshot(
-      customColRef,
-      (snapshot) => {
-        if (!snapshot.empty) {
-          const items: BrownieItem[] = [];
-          snapshot.forEach((d) => {
-            const raw = d.data() as BrownieItem;
-            items.push({
-              ...raw,
-              id: d.id || raw.id,
-            });
-          });
-          setCustomBrownies(items);
-          try {
-            localStorage.setItem(STORAGE_KEYS.CUSTOM, JSON.stringify(items));
-          } catch {}
-        }
-      },
-      () => {}
-    );
-
-    return () => unsubscribe();
-  }, []);
-
-  // 6. Sync Admin Team & Authorization from Firestore (without plain-text passwords)
-  useEffect(() => {
-    const adminDocRef = doc(db, 'settings', 'admins');
-    const unsubscribe = onSnapshot(
-      adminDocRef,
-      (docSnap) => {
-        if (docSnap.exists()) {
-          const data = docSnap.data();
-          const list =
-            Array.isArray(data?.adminList) && data.adminList.length > 0
-              ? data.adminList
-              : DEFAULT_ADMIN_LIST;
-          const emails =
-            Array.isArray(data?.adminEmails) && data.adminEmails.length > 0
-              ? data.adminEmails
-              : PRIMARY_ADMIN_EMAILS;
-
-          // Always guarantee that official owners are preserved in authorized list
-          const mergedEmails = Array.from(
-            new Set([
-              ...PRIMARY_ADMIN_EMAILS.map((e) => e.toLowerCase()),
-              ...emails.map((e: string) => e.toLowerCase()),
-              ...list.map((a: AdminUserRecord) => a.email.toLowerCase()),
-            ])
-          );
-
-          setAdminList(list);
-          setAdminEmails(mergedEmails);
-          try {
-            localStorage.setItem(STORAGE_KEYS.ADMINS, JSON.stringify(list));
-          } catch {}
-        } else {
-          // Initialize default admin list in Firestore without storing any plain-text password
-          setDoc(
-            adminDocRef,
-            {
-              adminList: DEFAULT_ADMIN_LIST,
-              adminEmails: PRIMARY_ADMIN_EMAILS.map((e) => e.toLowerCase()),
-              updatedAt: new Date().toISOString(),
-            },
-            { merge: true }
-          ).catch(() => {});
-        }
-      },
-      () => {}
-    );
-
-    return () => unsubscribe();
-  }, []);
-
   // Update Settings
   const updateSettings = async (newSettings: Partial<SiteSettings>) => {
     const updated = { ...settings, ...newSettings, updatedAt: new Date().toISOString() };
@@ -939,10 +633,6 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
         headers: getAdminAuthHeaders(),
         body: JSON.stringify(updated),
       });
-    } catch {}
-
-    try {
-      await setDoc(doc(db, 'settings', 'general'), updated, { merge: true });
     } catch {}
   };
 
@@ -960,10 +650,6 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
         headers: getAdminAuthHeaders(),
         body: JSON.stringify(updated),
       });
-    } catch {}
-
-    try {
-      await setDoc(doc(db, 'settings', 'achievements'), updated, { merge: true });
     } catch {}
   };
 
@@ -1034,10 +720,6 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
         headers: getAdminAuthHeaders(),
         body: JSON.stringify(cleanPayload),
       });
-    } catch {}
-
-    try {
-      await setDoc(doc(db, 'menu_items', newId), cleanPayload);
     } catch {}
   };
 
@@ -1134,10 +816,6 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
         body: JSON.stringify(cleanPayload),
       });
     } catch {}
-
-    try {
-      await setDoc(doc(db, 'menu_items', id), cleanPayload);
-    } catch {}
   };
 
   const deleteMenuItem = async (id: string) => {
@@ -1160,10 +838,6 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
         method: 'DELETE',
         headers: getAdminAuthHeaders(),
       });
-    } catch {}
-
-    try {
-      await deleteDoc(doc(db, 'menu_items', id));
     } catch {}
   };
 
@@ -1197,10 +871,6 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
         headers: getAdminAuthHeaders(),
         body: JSON.stringify(cleanPayload),
       });
-    } catch {}
-
-    try {
-      await setDoc(doc(db, 'baking_classes', newId), cleanPayload);
     } catch {}
   };
 
@@ -1264,10 +934,6 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
         body: JSON.stringify(cleanPayload),
       });
     } catch {}
-
-    try {
-      await setDoc(doc(db, 'baking_classes', id), cleanPayload);
-    } catch {}
   };
 
   const deleteClass = async (id: string) => {
@@ -1296,11 +962,6 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
         headers: getAdminAuthHeaders(),
       });
     } catch {}
-
-    // 3. Delete from Firestore collection
-    try {
-      await deleteDoc(doc(db, 'baking_classes', id));
-    } catch {}
   };
 
   // Custom Showcase Brownie Management
@@ -1319,10 +980,6 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
         headers: getAdminAuthHeaders(),
         body: JSON.stringify({ ...fullItem, isCustomShowcase: true }),
       });
-    } catch {}
-
-    try {
-      await setDoc(doc(db, 'custom_items', newId), fullItem);
     } catch {}
   };
 
@@ -1345,10 +1002,6 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
         body: JSON.stringify({ ...updatedItem, isCustomShowcase: true }),
       });
     } catch {}
-
-    try {
-      await setDoc(doc(db, 'custom_items', id), updatedItem);
-    } catch {}
   };
 
   const deleteCustomBrownie = async (id: string) => {
@@ -1363,10 +1016,6 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
         method: 'DELETE',
         headers: getAdminAuthHeaders(),
       });
-    } catch {}
-
-    try {
-      await deleteDoc(doc(db, 'custom_items', id));
     } catch {}
   };
 
@@ -1526,18 +1175,6 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
       });
     } catch {}
 
-    try {
-      await setDoc(
-        doc(db, 'settings', 'admins'),
-        {
-          adminList: sanitizedListForRemote,
-          adminEmails: updatedEmails,
-          updatedAt: new Date().toISOString(),
-        },
-        { merge: true }
-      );
-    } catch {}
-
     return {
       success: true,
       message: `Successfully granted admin access to ${cleanEmail}!`,
@@ -1586,18 +1223,6 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
       });
     } catch {}
 
-    try {
-      await setDoc(
-        doc(db, 'settings', 'admins'),
-        {
-          adminList: sanitizedListForRemote,
-          adminEmails: updatedEmails,
-          updatedAt: new Date().toISOString(),
-        },
-        { merge: true }
-      );
-    } catch {}
-
     return {
       success: true,
       message: `Revoked administrator access for ${cleanEmail}.`,
@@ -1636,18 +1261,6 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
         headers: getAdminAuthHeaders(),
         body: JSON.stringify(DEFAULT_ACHIEVEMENTS),
       });
-    } catch {}
-
-    try {
-      await setDoc(doc(db, 'settings', 'general'), DEFAULT_SETTINGS);
-      await setDoc(doc(db, 'settings', 'achievements'), DEFAULT_ACHIEVEMENTS);
-      for (const item of SIGNATURE_BROWNIES) {
-        await setDoc(doc(db, 'menu_items', item.id), item);
-        await setDoc(doc(db, 'custom_items', item.id), item);
-      }
-      for (const cls of BAKING_CLASSES) {
-        await setDoc(doc(db, 'baking_classes', cls.id), cls);
-      }
     } catch {}
   };
 
