@@ -46,6 +46,9 @@ export const ClassModal: React.FC<ClassModalProps> = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string>(null as unknown as string);
+  const [submissionKey, setSubmissionKey] = useState<string>(
+    () => `class_reg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+  );
 
   // Sync selected class with available classes
   useEffect(() => {
@@ -76,6 +79,7 @@ export const ClassModal: React.FC<ClassModalProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
     setErrorMsg('');
 
     let activeUser = user;
@@ -93,11 +97,20 @@ export const ClassModal: React.FC<ClassModalProps> = ({
       const classTitle = currentClassData?.title || 'Artisan Brownie Masterclass';
       const chosenDate = preferredDate || classDates[0] || 'Upcoming Scheduled Batch';
 
-      await registerForClass(classTitle, chosenDate, '');
+      await registerForClass(classTitle, chosenDate, '', {
+        idempotencyKey: submissionKey,
+        classId: currentClassData?.id,
+        userName: activeUser.displayName || 'Baking Student',
+        userEmail: activeUser.email || '',
+        status: 'registered',
+      });
       setSubmitted(true);
+      setSubmissionKey(`class_reg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
     } catch (err) {
       console.error(err);
-      setErrorMsg('Failed to submit class booking. Please try again.');
+      setErrorMsg(
+        err instanceof Error ? err.message : 'Failed to submit class booking. Please try again.'
+      );
     } finally {
       setIsSubmitting(false);
     }
@@ -105,6 +118,7 @@ export const ClassModal: React.FC<ClassModalProps> = ({
 
   const handleWaitlistSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
     setErrorMsg('');
 
     const name = waitlistName.trim() || user?.displayName || 'Interested Student';
@@ -120,12 +134,22 @@ export const ClassModal: React.FC<ClassModalProps> = ({
       await registerForClass(
         'Baking Masterclasses (Priority Waitlist)',
         'Upcoming Seasonal Batch (Priority Notification)',
-        `[Waitlist Request] Student: ${name}, Email: ${email}${waitlistPhone ? `, Tel: ${waitlistPhone}` : ''}`
+        `[Waitlist Request] Student: ${name}, Email: ${email}${waitlistPhone ? `, Tel: ${waitlistPhone}` : ''}`,
+        {
+          idempotencyKey: submissionKey,
+          userName: name,
+          userEmail: email,
+          userPhone: waitlistPhone.trim(),
+          status: 'waitlist',
+        }
       );
       setSubmitted(true);
+      setSubmissionKey(`class_reg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
     } catch (err) {
       console.error(err);
-      setErrorMsg('Failed to join waitlist. Please try again.');
+      setErrorMsg(
+        err instanceof Error ? err.message : 'Failed to join waitlist. Please try again.'
+      );
     } finally {
       setIsSubmitting(false);
     }
@@ -135,6 +159,7 @@ export const ClassModal: React.FC<ClassModalProps> = ({
     setSubmitted(false);
     setErrorMsg('');
     setPreferredDate('');
+    setSubmissionKey(`class_reg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
     onClose();
   };
 

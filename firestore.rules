@@ -99,8 +99,8 @@ service cloud.firestore {
       allow list: if true;
 
       allow create: if isValidId(registrationId) &&
-        incoming().keys().hasOnly(['userId', 'userEmail', 'userName', 'className', 'preferredDate', 'notes', 'status', 'createdAt']) &&
-        incoming().keys().hasAll(['userId', 'userEmail', 'className', 'status', 'createdAt']) &&
+        incoming().keys().hasOnly(['id', 'userId', 'userEmail', 'userName', 'userPhone', 'className', 'preferredDate', 'notes', 'status', 'createdAt', 'updatedAt']) &&
+        incoming().keys().hasAll(['userId', 'className', 'status', 'createdAt']) &&
         incoming().className is string && incoming().className.size() <= 150 &&
         incoming().status in ['registered', 'waitlist', 'cancelled'];
 
@@ -114,8 +114,8 @@ service cloud.firestore {
       allow list: if true;
 
       allow create: if isValidId(inquiryId) &&
-        incoming().keys().hasOnly(['userId', 'userEmail', 'userName', 'userPhone', 'subject', 'message', 'status', 'createdAt', 'isRead', 'readAt']) &&
-        incoming().keys().hasAll(['userId', 'userEmail', 'subject', 'message', 'status', 'createdAt']) &&
+        incoming().keys().hasOnly(['id', 'orderId', 'userId', 'userEmail', 'userName', 'userPhone', 'subject', 'message', 'status', 'createdAt', 'updatedAt', 'isRead', 'readAt']) &&
+        incoming().keys().hasAll(['userId', 'subject', 'message', 'status', 'createdAt']) &&
         incoming().subject is string && incoming().subject.size() <= 300 &&
         incoming().message is string && incoming().message.size() <= 4000 &&
         incoming().status in ['new', 'read', 'replied', 'closed'];
@@ -133,8 +133,8 @@ service cloud.firestore {
 
       allow create: if isValidId(orderId) &&
         incoming().keys().hasOnly([
-          'id', 'orderId', 'userId', 'customerName', 'customerEmail', 'customerPhone',
-          'items', 'totalAmount', 'totalAmountNumeric', 'status', 'statusMessage',
+          'id', 'orderId', 'idempotencyKey', 'userId', 'customerName', 'customerEmail', 'customerPhone',
+          'items', 'totalAmount', 'totalAmountNumeric', 'paymentStatus', 'status', 'statusMessage',
           'estimatedDelivery', 'deliveryAddress', 'driverName', 'driverPhone',
           'createdAt', 'updatedAt', 'specialInstructions', 'hasFrostedAddon',
           'isRead', 'readAt'

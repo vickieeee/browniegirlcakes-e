@@ -20,7 +20,7 @@ export const AdminLogin: React.FC<AdminLoginProps> = ({ onLoginSuccess, onBackTo
 
   const isUsingDefaultPassword = adminPassword === DEFAULT_ADMIN_PASSWORD;
 
-  const handlePasswordLogin = (e: React.FormEvent) => {
+  const handlePasswordLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
 
@@ -32,23 +32,51 @@ export const AdminLogin: React.FC<AdminLoginProps> = ({ onLoginSuccess, onBackTo
 
     setIsLoading(true);
 
-    setTimeout(() => {
-      const check = verifyAdminCredentials(cleanEmail, password);
-      if (check.valid) {
+    try {
+      const response = await fetch('/api/admin/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: cleanEmail, password }),
+      });
+      const data = await response.json().catch(() => null);
+
+      if (response.ok && data?.success && data?.token) {
         if (rememberMe) {
-          localStorage.setItem('browinegirl_admin_token', 'session_' + Date.now());
+          localStorage.setItem('browinegirl_admin_token', data.token);
           localStorage.setItem('browinegirl_admin_user', cleanEmail);
         } else {
-          sessionStorage.setItem('browinegirl_admin_token', 'session_' + Date.now());
+          sessionStorage.setItem('browinegirl_admin_token', data.token);
           sessionStorage.setItem('browinegirl_admin_user', cleanEmail);
         }
         setIsLoading(false);
         onLoginSuccess(cleanEmail);
-      } else {
-        setIsLoading(false);
-        setError(check.message);
+        return;
       }
-    }, 300);
+
+      if (response.status === 401 || response.status === 403) {
+        setIsLoading(false);
+        setError(data?.message || 'Invalid admin email or password.');
+        return;
+      }
+    } catch {
+      // Fallback to local verification if server is temporarily unreachable
+    }
+
+    const check = verifyAdminCredentials(cleanEmail, password);
+    if (check.valid) {
+      if (rememberMe) {
+        localStorage.setItem('browinegirl_admin_token', 'session_' + Date.now());
+        localStorage.setItem('browinegirl_admin_user', cleanEmail);
+      } else {
+        sessionStorage.setItem('browinegirl_admin_token', 'session_' + Date.now());
+        sessionStorage.setItem('browinegirl_admin_user', cleanEmail);
+      }
+      setIsLoading(false);
+      onLoginSuccess(cleanEmail);
+    } else {
+      setIsLoading(false);
+      setError(check.message);
+    }
   };
 
   const handleGoogleAdminLogin = async () => {
@@ -70,7 +98,21 @@ export const AdminLogin: React.FC<AdminLoginProps> = ({ onLoginSuccess, onBackTo
           return;
         }
 
-        localStorage.setItem('browinegirl_admin_token', 'google_' + loggedUser.uid);
+        let serverToken = 'google_' + loggedUser.uid;
+        try {
+          const idToken = await loggedUser.getIdToken();
+          const res = await fetch('/api/admin/google-login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ idToken, email: loggedEmail }),
+          });
+          const data = await res.json().catch(() => null);
+          if (res.ok && data?.token) {
+            serverToken = data.token;
+          }
+        } catch {}
+
+        localStorage.setItem('browinegirl_admin_token', serverToken);
         localStorage.setItem('browinegirl_admin_user', loggedUser.email || 'preethipreethu712@gmail.com');
         onLoginSuccess(loggedUser.email || 'preethipreethu712@gmail.com');
       }

@@ -51,6 +51,9 @@ export const CustomOrdersPage: React.FC<CustomOrdersPageProps> = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [submissionKey, setSubmissionKey] = useState<string>(
+    () => `custom_bk_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+  );
 
   // Pre-fill user profile info if signed in
   useEffect(() => {
@@ -108,6 +111,7 @@ export const CustomOrdersPage: React.FC<CustomOrdersPageProps> = ({
 
   const handleCustomOrderSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
     setErrorMsg(null);
 
     let activeUser = user;
@@ -161,13 +165,23 @@ ${specialNotes || 'None specified'}
       await submitInquiry(subject, messageBody, {
         name: resolvedName,
         email: resolvedEmail,
-        phone: customerPhone,
+        phone: customerPhone.trim(),
+        eventType,
+        eventDate: eventDate || 'Flexible / To be confirmed',
+        guestCount: batchSize,
+        deliveryType: 'delivery',
+        deliveryAddress: deliveryAddress.trim(),
+        requireDeliveryAddress: true,
+        idempotencyKey: submissionKey,
       });
 
       setSubmitted(true);
+      setSubmissionKey(`custom_bk_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
     } catch (err) {
       console.error(err);
-      setErrorMsg('Failed to submit custom order request. Please try again.');
+      setErrorMsg(
+        err instanceof Error ? err.message : 'Failed to submit custom order request. Please try again.'
+      );
     } finally {
       setIsSubmitting(false);
     }

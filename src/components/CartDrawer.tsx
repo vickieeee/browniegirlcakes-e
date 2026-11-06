@@ -48,6 +48,9 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [confirmedOrder, setConfirmedOrder] = useState<CartOrderRecord | null>(null);
+  const [checkoutIdempotencyKey, setCheckoutIdempotencyKey] = useState<string>(
+    () => `idem_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
+  );
 
   useEffect(() => {
     if (user) {
@@ -55,6 +58,11 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
       if (user.email && !customerEmail) setCustomerEmail(user.email);
     }
   }, [user]);
+
+  useEffect(() => {
+    // Generate a fresh idempotency key whenever the cart items change
+    setCheckoutIdempotencyKey(`idem_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`);
+  }, [cartItems]);
 
   if (!isCartOpen) return null;
 
@@ -73,29 +81,27 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
     setFormError(null);
     if (!user) {
       const signedInUser = await signInWithGoogle();
-      if (!signedInUser) {
-        setFormError('Please sign in with Google to place an order.');
-        return;
+      if (signedInUser) {
+        if (signedInUser.displayName && !customerName) setCustomerName(signedInUser.displayName);
+        if (signedInUser.email && !customerEmail) setCustomerEmail(signedInUser.email);
       }
-      if (signedInUser.displayName && !customerName) setCustomerName(signedInUser.displayName);
-      if (signedInUser.email && !customerEmail) setCustomerEmail(signedInUser.email);
     }
     setCheckoutStep('checkout');
   };
 
   const handlePlaceOrder = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
+
     let activeUser = user;
-    if (!activeUser) {
+    if (!activeUser && !customerName.trim()) {
       const signedInUser = await signInWithGoogle();
-      if (!signedInUser) {
-        setFormError('Please sign in with Google to place your order.');
-        return;
+      if (signedInUser) {
+        activeUser = signedInUser;
       }
-      activeUser = signedInUser;
     }
 
-    const resolvedName = customerName.trim() || activeUser.displayName || '';
+    const resolvedName = customerName.trim() || activeUser?.displayName || '';
     if (!resolvedName) {
       setFormError('Please enter your full name.');
       return;
@@ -119,16 +125,21 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
       const orderRecord = await submitCartOrder({
         customerName: resolvedName,
         customerPhone: customerPhone.trim(),
-        customerEmail: customerEmail.trim() || activeUser.email || '',
+        customerEmail: customerEmail.trim() || activeUser?.email || '',
         deliveryAddress: deliveryAddress.trim(),
         specialInstructions: specialInstructions.trim(),
+        idempotencyKey: checkoutIdempotencyKey,
         authenticatedUser: activeUser,
       });
       setConfirmedOrder(orderRecord);
       setCheckoutStep('confirmed');
     } catch (err) {
       console.error('Order submission error:', err);
-      setFormError('Could not place order. Please sign in and try again.');
+      setFormError(
+        err instanceof Error
+          ? err.message
+          : 'Could not save your order to the database. Please try again.'
+      );
     } finally {
       setIsSubmitting(false);
     }

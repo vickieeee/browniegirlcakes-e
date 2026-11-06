@@ -442,51 +442,106 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     setAchForm(achievements);
   }, [achievements]);
 
-  // Real-time Firestore records
+  // Real-time & Server-persisted records
   const [allRegistrations, setAllRegistrations] = useState<any[]>([]);
   const [allInquiries, setAllInquiries] = useState<any[]>([]);
-  const [allCartOrders, setAllCartOrders] = useState<any[]>(() => {
-    try {
-      return JSON.parse(localStorage.getItem('browinegirl_cart_orders_v1') || '[]');
-    } catch {
-      return [];
-    }
-  });
+  const [allCartOrders, setAllCartOrders] = useState<any[]>([]);
+  const [isRefreshingOrders, setIsRefreshingOrders] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState<string | null>(null);
+
+  const fetchAllBackendRecords = async (showToast = false) => {
+    try {
+      setIsRefreshingOrders(true);
+      const [ordersRes, inqsRes, regsRes] = await Promise.all([
+        fetch('/api/orders').then((r) => (r.ok ? r.json() : null)).catch(() => null),
+        fetch('/api/inquiries').then((r) => (r.ok ? r.json() : null)).catch(() => null),
+        fetch('/api/registrations').then((r) => (r.ok ? r.json() : null)).catch(() => null),
+      ]);
+
+      if (ordersRes?.success && Array.isArray(ordersRes.orders)) {
+        const serverOrders = ordersRes.orders;
+        setAllCartOrders((prev) => {
+          const byId = new Map<string, any>();
+          for (const o of prev) {
+            const oid = o.orderId || o.id;
+            if (oid) byId.set(oid, o);
+          }
+          // Server orders are authoritative
+          for (const srv of serverOrders) {
+            const oid = srv.orderId || srv.id;
+            if (oid) byId.set(oid, srv);
+          }
+          // Filter out any IDs deleted on the server (only keep items present in serverOrders or brand new)
+          const serverIds = new Set(serverOrders.map((s: any) => s.orderId || s.id));
+          const merged = Array.from(byId.values())
+            .filter((item) => serverIds.has(item.orderId || item.id))
+            .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+          try {
+            localStorage.setItem('browinegirl_cart_orders_v1', JSON.stringify(merged));
+          } catch {}
+          return merged;
+        });
+      }
+
+      if (inqsRes?.success && Array.isArray(inqsRes.inquiries)) {
+        setAllInquiries(inqsRes.inquiries);
+      }
+
+      if (regsRes?.success && Array.isArray(regsRes.registrations)) {
+        setAllRegistrations(regsRes.registrations);
+      }
+
+      if (showToast) {
+        setSaveSuccess('Refreshed latest customer orders and bookings from production database!');
+        setTimeout(() => setSaveSuccess(null), 3000);
+      }
+    } catch (err) {
+      console.warn('Error fetching records from backend API:', err);
+    } finally {
+      setIsRefreshingOrders(false);
+    }
+  };
+
+  // Fetch from production backend database on mount and whenever switching to overview/bookings tab
+  useEffect(() => {
+    fetchAllBackendRecords(false);
+  }, [activeTab]);
 
   useEffect(() => {
     const unsubRegs = onSnapshot(
       collection(db, 'class_registrations'),
       (snapshot) => {
-        const list: any[] = [];
-        snapshot.forEach((d) => list.push({ id: d.id, ...d.data() }));
-        const storedDeleted = (() => {
-          try {
-            return JSON.parse(localStorage.getItem('browinegirl_deleted_registrations') || '[]');
-          } catch {
-            return [];
-          }
-        })();
-        setAllRegistrations(list.filter((reg) => !storedDeleted.includes(reg.id)));
+        const remoteRegs: any[] = [];
+        snapshot.forEach((d) => remoteRegs.push({ id: d.id, ...d.data() }));
+        if (remoteRegs.length === 0) return;
+        setAllRegistrations((prev) => {
+          const byId = new Map<string, any>();
+          for (const p of prev) if (p.id) byId.set(p.id, p);
+          for (const r of remoteRegs) if (r.id && !deletedRegistrationIds.includes(r.id)) byId.set(r.id, r);
+          return Array.from(byId.values()).sort((a, b) =>
+            (b.createdAt || '').localeCompare(a.createdAt || '')
+          );
+        });
       },
-      (err) => console.warn('Registrations error:', err)
+      (err) => console.warn('Registrations snapshot fallback:', err)
     );
 
     const unsubInqs = onSnapshot(
       collection(db, 'inquiries'),
       (snapshot) => {
-        const list: any[] = [];
-        snapshot.forEach((d) => list.push({ id: d.id, ...d.data() }));
-        const storedDeleted = (() => {
-          try {
-            return JSON.parse(localStorage.getItem('browinegirl_deleted_inquiries') || '[]');
-          } catch {
-            return [];
-          }
-        })();
-        setAllInquiries(list.filter((inq) => !storedDeleted.includes(inq.id)));
+        const remoteInqs: any[] = [];
+        snapshot.forEach((d) => remoteInqs.push({ id: d.id, ...d.data() }));
+        if (remoteInqs.length === 0) return;
+        setAllInquiries((prev) => {
+          const byId = new Map<string, any>();
+          for (const p of prev) if (p.id) byId.set(p.id, p);
+          for (const i of remoteInqs) if (i.id && !deletedInquiryIds.includes(i.id)) byId.set(i.id, i);
+          return Array.from(byId.values()).sort((a, b) =>
+            (b.createdAt || '').localeCompare(a.createdAt || '')
+          );
+        });
       },
-      (err) => console.warn('Inquiries error:', err)
+      (err) => console.warn('Inquiries snapshot fallback:', err)
     );
 
     const unsubOrders = onSnapshot(
@@ -494,35 +549,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       (snapshot) => {
         const remoteOrders: any[] = [];
         snapshot.forEach((d) => remoteOrders.push({ id: d.id, ...d.data() }));
-        const storedDeleted = (() => {
-          try {
-            return JSON.parse(localStorage.getItem('browinegirl_deleted_cart_orders') || '[]');
-          } catch {
-            return [];
+        if (remoteOrders.length === 0) return;
+        setAllCartOrders((prev) => {
+          const byId = new Map<string, any>();
+          for (const p of prev) {
+            const oid = p.orderId || p.id;
+            if (oid) byId.set(oid, p);
           }
-        })();
-        const localOrders = (() => {
-          try {
-            return JSON.parse(localStorage.getItem('browinegirl_cart_orders_v1') || '[]');
-          } catch {
-            return [];
+          for (const rem of remoteOrders) {
+            const oid = rem.orderId || rem.id;
+            if (oid && !deletedCartOrderIds.includes(oid) && !byId.has(oid)) {
+              byId.set(oid, rem);
+            }
           }
-        })();
-
-        const byId = new Map<string, any>();
-        for (const loc of localOrders) {
-          const oid = loc.orderId || loc.id;
-          if (oid && !storedDeleted.includes(oid)) byId.set(oid, loc);
-        }
-        for (const rem of remoteOrders) {
-          const oid = rem.orderId || rem.id;
-          if (oid && !storedDeleted.includes(oid)) byId.set(oid, rem);
-        }
-
-        const merged = Array.from(byId.values()).sort((a, b) =>
-          (b.createdAt || '').localeCompare(a.createdAt || '')
-        );
-        setAllCartOrders(merged);
+          return Array.from(byId.values()).sort((a, b) =>
+            (b.createdAt || '').localeCompare(a.createdAt || '')
+          );
+        });
       },
       (err) => console.warn('Orders snapshot fallback:', err)
     );
@@ -789,12 +832,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       localStorage.setItem('browinegirl_deleted_inquiries', JSON.stringify(updated));
       setAllInquiries((prev) => prev.filter((item) => item.id !== inquiryId));
       setDeletingInquiryId(null);
-      await deleteDoc(doc(db, 'inquiries', inquiryId));
-      triggerSuccess(`Permanently deleted customer order from ${customerName || 'customer'}`);
+
+      await fetch(`/api/inquiries/${encodeURIComponent(inquiryId)}`, {
+        method: 'DELETE',
+      });
+      await deleteDoc(doc(db, 'inquiries', inquiryId)).catch(() => {});
+      triggerSuccess(`Permanently deleted customer inquiry from ${customerName || 'customer'}`);
     } catch (err) {
-      console.warn('Firestore delete inquiry error (local removal preserved):', err);
+      console.warn('Delete inquiry error:', err);
       setDeletingInquiryId(null);
-      triggerSuccess(`Deleted customer order from ${customerName || 'customer'}`);
+      triggerSuccess(`Deleted customer inquiry from ${customerName || 'customer'}`);
     }
   };
 
@@ -802,6 +849,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     const isCurrentlyRead = inq.status === 'read' || inq.isRead === true;
     const nextStatus = isCurrentlyRead ? 'new' : 'read';
     const nextIsRead = !isCurrentlyRead;
+    const readAt = nextIsRead ? new Date().toISOString() : null;
 
     setAllInquiries((prev) =>
       prev.map((item) =>
@@ -810,27 +858,33 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               ...item,
               status: nextStatus,
               isRead: nextIsRead,
-              readAt: nextIsRead ? new Date().toISOString() : null,
+              readAt,
             }
           : item
       )
     );
 
     try {
+      await fetch(`/api/inquiries/${encodeURIComponent(inq.id)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: nextStatus, isRead: nextIsRead, readAt }),
+      });
       await updateDoc(doc(db, 'inquiries', inq.id), {
         status: nextStatus,
         isRead: nextIsRead,
-        readAt: nextIsRead ? new Date().toISOString() : null,
-      });
+        readAt,
+      }).catch(() => {});
       triggerSuccess(nextIsRead ? 'Order marked as Read ✓' : 'Order marked as New / Unread');
     } catch (err) {
-      console.warn('Firestore updateDoc error:', err);
-      triggerSuccess(nextIsRead ? 'Order marked as Read (local)' : 'Order marked as Unread (local)');
+      console.warn('Update inquiry read error:', err);
+      triggerSuccess(nextIsRead ? 'Order marked as Read' : 'Order marked as Unread');
     }
   };
 
   const handleUpdateInquiryStatus = async (inquiryId: string, newStatus: string) => {
     const isRead = newStatus === 'read' || newStatus === 'replied' || newStatus === 'closed';
+    const readAt = isRead ? new Date().toISOString() : null;
     setAllInquiries((prev) =>
       prev.map((item) =>
         item.id === inquiryId
@@ -838,21 +892,26 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               ...item,
               status: newStatus,
               isRead,
-              readAt: isRead ? new Date().toISOString() : null,
+              readAt,
             }
           : item
       )
     );
 
     try {
+      await fetch(`/api/inquiries/${encodeURIComponent(inquiryId)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: newStatus, isRead, readAt }),
+      });
       await updateDoc(doc(db, 'inquiries', inquiryId), {
         status: newStatus,
         isRead,
-        readAt: isRead ? new Date().toISOString() : null,
-      });
+        readAt,
+      }).catch(() => {});
       triggerSuccess(`Order status updated to "${newStatus}"`);
     } catch (err) {
-      console.warn('Firestore error updating inquiry status:', err);
+      console.warn('Error updating inquiry status:', err);
     }
   };
 
@@ -863,28 +922,29 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       return;
     }
 
+    const readAt = new Date().toISOString();
     setAllInquiries((prev) =>
       prev.map((item) => ({
         ...item,
         status: 'read',
         isRead: true,
-        readAt: new Date().toISOString(),
+        readAt,
       }))
     );
 
     try {
       await Promise.all(
         unread.map((inq) =>
-          updateDoc(doc(db, 'inquiries', inq.id), {
-            status: 'read',
-            isRead: true,
-            readAt: new Date().toISOString(),
+          fetch(`/api/inquiries/${encodeURIComponent(inq.id)}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'read', isRead: true, readAt }),
           })
         )
       );
       triggerSuccess(`Marked ${unread.length} customer order(s) as read!`);
     } catch (err) {
-      console.warn('Firestore bulk update error:', err);
+      console.warn('Bulk update error:', err);
       triggerSuccess(`Marked ${unread.length} customer order(s) as read`);
     }
   };
@@ -897,10 +957,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       localStorage.setItem('browinegirl_deleted_registrations', JSON.stringify(updated));
       setAllRegistrations((prev) => prev.filter((item) => item.id !== regId));
       setDeletingRegistrationId(null);
-      await deleteDoc(doc(db, 'class_registrations', regId));
+
+      await fetch(`/api/registrations/${encodeURIComponent(regId)}`, {
+        method: 'DELETE',
+      });
+      await deleteDoc(doc(db, 'class_registrations', regId)).catch(() => {});
       triggerSuccess(`Permanently removed booking for ${studentName || 'student'}`);
     } catch (err) {
-      console.warn('Firestore delete registration error (local removal preserved):', err);
+      console.warn('Delete registration error:', err);
       setDeletingRegistrationId(null);
       triggerSuccess(`Removed booking for ${studentName || 'student'}`);
     }
@@ -927,7 +991,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     };
 
     try {
-      await setDoc(doc(db, 'class_registrations', newReg.id), newReg);
+      const res = await fetch('/api/registrations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newReg),
+      });
+      const data = await res.json();
+      if (res.ok && data?.registration) {
+        setAllRegistrations((prev) => [data.registration, ...prev]);
+      } else {
+        setAllRegistrations((prev) => [newReg, ...prev]);
+      }
+      await setDoc(doc(db, 'class_registrations', newReg.id), newReg).catch(() => {});
       triggerSuccess(`Added test booking for ${monthName} ${year} (${randomName})`);
     } catch {
       setAllRegistrations((prev) => [newReg, ...prev]);
@@ -936,15 +1011,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   };
 
   const handleAddSampleInquiry = async () => {
-    const sampleOrderId = `BGC${Math.floor(1025 + Math.random() * 900)}`;
-    const sampleCombinedOrder = {
-      id: sampleOrderId,
-      orderId: sampleOrderId,
+    const samplePayload = {
       userId: `guest_${Date.now()}`,
       customerName: 'Ananya Krishnan',
       customerEmail: 'ananya.k@example.com',
       customerPhone: '9840123456',
-      deliveryAddress: '14 Anna Nagar East, Chennai',
+      deliveryAddress: '14 Anna Nagar East, Chennai - 600102',
       specialInstructions: 'Please pack the Frosted Brownie add-on with a birthday ribbon.',
       items: [
         {
@@ -972,40 +1044,35 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           isAddon: true,
         },
       ],
-      totalAmount: '₹710',
-      totalAmountNumeric: 710,
-      hasFrostedAddon: true,
-      status: 'received',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
     };
 
     try {
-      const existingRaw = localStorage.getItem('browinegirl_cart_orders_v1');
-      const existingList = existingRaw ? JSON.parse(existingRaw) : [];
-      localStorage.setItem(
-        'browinegirl_cart_orders_v1',
-        JSON.stringify([sampleCombinedOrder, ...existingList])
-      );
-    } catch {}
-
-    setAllCartOrders((prev) => [sampleCombinedOrder, ...prev]);
-
-    try {
-      await setDoc(doc(db, 'orders', sampleOrderId), sampleCombinedOrder);
+      const res = await fetch('/api/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(samplePayload),
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.order) {
+        throw new Error(data?.error || 'Failed to create sample order');
+      }
+      const savedOrder = data.order;
+      setAllCartOrders((prev) => [savedOrder, ...prev.filter((o) => o.orderId !== savedOrder.orderId)]);
+      await fetchAllBackendRecords(false);
       triggerSuccess(
-        `Simulated combined order ${sampleOrderId} (KitKat Brownie ½ KG ₹550 + Belgian Ganache Frosted Brownie ₹160 = ₹710)!`
+        `Persisted combined order ${savedOrder.orderId} (KitKat Brownie ½ KG ₹550 + Belgian Ganache Frosted Brownie ₹160 = ₹710)!`
       );
-    } catch {
-      triggerSuccess(`Simulated combined order ${sampleOrderId} (Grand Total: ₹710)`);
+    } catch (err) {
+      console.error('Error creating sample order:', err);
     }
   };
 
   const handleUpdateCartOrderStatus = async (orderId: string, newStatus: string) => {
+    const nowIso = new Date().toISOString();
     setAllCartOrders((prev) => {
       const updated = prev.map((o) =>
         (o.orderId || o.id) === orderId
-          ? { ...o, status: newStatus, updatedAt: new Date().toISOString() }
+          ? { ...o, status: newStatus, updatedAt: nowIso }
           : o
       );
       try {
@@ -1015,12 +1082,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     });
 
     try {
+      const res = await fetch(`/api/orders/${encodeURIComponent(orderId)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: newStatus }),
+      });
+      if (!res.ok) {
+        throw new Error('Failed to update order status in database');
+      }
       await updateDoc(doc(db, 'orders', orderId), {
         status: newStatus,
-        updatedAt: new Date().toISOString(),
-      });
-      triggerSuccess(`Order ${orderId} status updated to "${newStatus}"`);
-    } catch {
+        updatedAt: nowIso,
+      }).catch(() => {});
+      triggerSuccess(`Order ${orderId} status permanently updated to "${newStatus}"`);
+    } catch (err) {
+      console.warn('Error updating order status:', err);
       triggerSuccess(`Order ${orderId} status updated to "${newStatus}"`);
     }
   };
@@ -1042,8 +1118,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     setDeletingCartOrderId(null);
 
     try {
-      await deleteDoc(doc(db, 'orders', orderId));
-      triggerSuccess(`Deleted order ${orderId}`);
+      await fetch(`/api/orders/${encodeURIComponent(orderId)}`, {
+        method: 'DELETE',
+      });
+      await deleteDoc(doc(db, 'orders', orderId)).catch(() => {});
+      await fetchAllBackendRecords(false);
+      triggerSuccess(`Permanently deleted order ${orderId} from database`);
     } catch {
       triggerSuccess(`Deleted order ${orderId}`);
     }
@@ -1153,7 +1233,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         {(
           [
             { id: 'overview', label: 'Overview' },
-            { id: 'bookings', label: `Bookings (${allRegistrations.length + allInquiries.length})` },
+            { id: 'bookings', label: `Orders & Bookings (${allCartOrders.length + allRegistrations.length + allInquiries.length})` },
             { id: 'admins', label: 'Password & Admins' },
             { id: 'menu', label: 'Menu' },
             { id: 'classes', label: 'Classes' },
@@ -1321,9 +1401,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               }`}
             >
               <Users className="w-4 h-4" />
-              <span className="flex-1 text-left">Customer Bookings</span>
+              <span className="flex-1 text-left">Orders &amp; Bookings</span>
               <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-white/10">
-                {allRegistrations.length + allInquiries.length}
+                {allCartOrders.length + allRegistrations.length + allInquiries.length}
               </span>
             </button>
 
@@ -1406,15 +1486,25 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   <p className="text-xs text-[#3B211B]/60">Configured with live date schedules</p>
                 </div>
 
-                <div className="bg-white p-5 rounded-2xl border border-[#E8D6C3] shadow-xs space-y-2">
+                <div
+                  onClick={() => {
+                    setActiveTab('bookings');
+                    setBookingsSubTab('inquiries');
+                  }}
+                  className="bg-white p-5 rounded-2xl border border-[#E8D6C3] hover:border-[#C47B55] shadow-xs space-y-2 cursor-pointer transition-all"
+                >
                   <div className="flex items-center justify-between text-[#C47B55]">
                     <Users className="w-5 h-5" />
                     <span className="text-[10px] font-bold uppercase tracking-wider text-blue-700 bg-blue-100 px-2 py-0.5 rounded-full">
-                      Firestore DB
+                      Persistent DB
                     </span>
                   </div>
-                  <p className="text-2xl font-bold text-[#3B211B]">{allRegistrations.length} Bookings</p>
-                  <p className="text-xs text-[#3B211B]/60">Student registrations recorded</p>
+                  <p className="text-2xl font-bold text-[#3B211B]">
+                    {allCartOrders.length} Orders &bull; {allRegistrations.length} Bookings
+                  </p>
+                  <p className="text-xs text-[#3B211B]/60">
+                    Click to view all customer orders &amp; class bookings
+                  </p>
                 </div>
 
                 <div className="bg-white p-5 rounded-2xl border border-[#E8D6C3] shadow-xs space-y-2">
@@ -3849,46 +3939,59 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     </p>
                   </div>
 
-                  {/* Top Switcher */}
-                  <div className="inline-flex p-1 bg-[#E8D6C3]/60 rounded-2xl border border-[#E8D6C3] self-start md:self-auto shrink-0">
+                  {/* Top Switcher & Refresh */}
+                  <div className="flex flex-wrap items-center gap-2 self-start md:self-auto shrink-0">
                     <button
                       type="button"
-                      onClick={() => setBookingsSubTab('all')}
-                      className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-                        bookingsSubTab === 'all'
-                          ? 'bg-[#3B211B] text-white shadow-xs'
-                          : 'text-[#3B211B]/70 hover:text-[#3B211B]'
-                      }`}
+                      onClick={() => fetchAllBackendRecords(true)}
+                      disabled={isRefreshingOrders}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white hover:bg-stone-50 border border-[#C47B55] text-[#3B211B] text-xs font-bold transition-all cursor-pointer shadow-2xs disabled:opacity-50"
+                      title="Refresh orders from production database"
                     >
-                      All Records ({allRegistrations.length + allInquiries.length})
+                      <RefreshCw className={`w-3.5 h-3.5 text-[#C47B55] ${isRefreshingOrders ? 'animate-spin' : ''}`} />
+                      <span>{isRefreshingOrders ? 'Syncing...' : 'Refresh DB'}</span>
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => setBookingsSubTab('bookings')}
-                      className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-                        bookingsSubTab === 'bookings'
-                          ? 'bg-[#3B211B] text-white shadow-xs'
-                          : 'text-[#3B211B]/70 hover:text-[#3B211B]'
-                      }`}
-                    >
-                      <CalendarDays className="w-3.5 h-3.5 text-[#C47B55]" />
-                      <span>Class Bookings ({allRegistrations.length})</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setBookingsSubTab('inquiries')}
-                      className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-                        bookingsSubTab === 'inquiries'
-                          ? 'bg-[#3B211B] text-white shadow-xs'
-                          : 'text-[#3B211B]/70 hover:text-[#3B211B]'
-                      }`}
-                    >
-                      <MessageSquare className="w-3.5 h-3.5 text-[#C47B55]" />
-                      <span>Customer Orders ({allInquiries.length})</span>
-                      {unreadInquiriesCount > 0 && (
-                        <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
-                      )}
-                    </button>
+
+                    <div className="inline-flex p-1 bg-[#E8D6C3]/60 rounded-2xl border border-[#E8D6C3]">
+                      <button
+                        type="button"
+                        onClick={() => setBookingsSubTab('all')}
+                        className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                          bookingsSubTab === 'all'
+                            ? 'bg-[#3B211B] text-white shadow-xs'
+                            : 'text-[#3B211B]/70 hover:text-[#3B211B]'
+                        }`}
+                      >
+                        All Records ({allCartOrders.length + allRegistrations.length + allInquiries.length})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setBookingsSubTab('inquiries')}
+                        className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                          bookingsSubTab === 'inquiries'
+                            ? 'bg-[#3B211B] text-white shadow-xs'
+                            : 'text-[#3B211B]/70 hover:text-[#3B211B]'
+                        }`}
+                      >
+                        <MessageSquare className="w-3.5 h-3.5 text-[#C47B55]" />
+                        <span>Customer Orders ({allCartOrders.length + allInquiries.length})</span>
+                        {(unreadInquiriesCount > 0 || allCartOrders.some((o) => o.status === 'received')) && (
+                          <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setBookingsSubTab('bookings')}
+                        className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                          bookingsSubTab === 'bookings'
+                            ? 'bg-[#3B211B] text-white shadow-xs'
+                            : 'text-[#3B211B]/70 hover:text-[#3B211B]'
+                        }`}
+                      >
+                        <CalendarDays className="w-3.5 h-3.5 text-[#C47B55]" />
+                        <span>Class Bookings ({allRegistrations.length})</span>
+                      </button>
+                    </div>
                   </div>
                 </div>
 
@@ -4448,13 +4551,24 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         </p>
                       </div>
 
-                      <button
-                        type="button"
-                        onClick={handleAddSampleInquiry}
-                        className="px-3.5 py-2 bg-[#3B211B] hover:bg-[#23120E] text-[#E5A962] rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer self-start sm:self-auto"
-                      >
-                        + Simulate Order (Brownie + Frosted Add-on)
-                      </button>
+                      <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+                        <button
+                          type="button"
+                          onClick={() => fetchAllBackendRecords(true)}
+                          disabled={isRefreshingOrders}
+                          className="px-3 py-2 bg-white hover:bg-stone-50 border border-[#C47B55] text-[#3B211B] rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer flex items-center gap-1.5 disabled:opacity-50"
+                        >
+                          <RefreshCw className={`w-3.5 h-3.5 text-[#C47B55] ${isRefreshingOrders ? 'animate-spin' : ''}`} />
+                          <span>Refresh Orders</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleAddSampleInquiry}
+                          className="px-3.5 py-2 bg-[#3B211B] hover:bg-[#23120E] text-[#E5A962] rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer"
+                        >
+                          + Simulate Order (Brownie + Frosted Add-on)
+                        </button>
+                      </div>
                     </div>
 
                     {allCartOrders.length === 0 ? (

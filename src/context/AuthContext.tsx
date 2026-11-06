@@ -46,17 +46,44 @@ export interface Inquiry {
   createdAt: string;
 }
 
+export interface ClassRegistrationOptions {
+  idempotencyKey?: string;
+  userName?: string;
+  userEmail?: string;
+  userPhone?: string;
+  classId?: string;
+  status?: 'registered' | 'waitlist';
+}
+
+export interface InquirySubmissionOptions {
+  name?: string;
+  email?: string;
+  phone?: string;
+  eventType?: string;
+  eventDate?: string;
+  guestCount?: string;
+  deliveryType?: 'delivery' | 'pickup';
+  deliveryAddress?: string;
+  requireDeliveryAddress?: boolean;
+  idempotencyKey?: string;
+}
+
 interface AuthContextType {
   user: User | null;
   userProfile: UserProfile | null;
   loading: boolean;
   signInWithGoogle: () => Promise<User | null>;
   signOutUser: () => Promise<void>;
-  registerForClass: (className: string, preferredDate?: string, notes?: string) => Promise<void>;
+  registerForClass: (
+    className: string,
+    preferredDate?: string,
+    notes?: string,
+    options?: ClassRegistrationOptions
+  ) => Promise<void>;
   submitInquiry: (
     subject: string,
     message: string,
-    contactInfo?: { name?: string; email?: string; phone?: string }
+    contactInfo?: InquirySubmissionOptions
   ) => Promise<void>;
   toggleFavorite: (brownieId: string) => Promise<void>;
   userRegistrations: ClassRegistration[];
@@ -72,17 +99,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [userRegistrations, setUserRegistrations] = useState<ClassRegistration[]>([]);
   const [userInquiries, setUserInquiries] = useState<Inquiry[]>([]);
 
-  // Listen to Auth State
+  // Listen to Auth State (Preserving existing Firebase Authentication & Firestore sync + MongoDB users sync)
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
       if (currentUser) {
-        // Sync user profile in Firestore
+        const emailLower = (currentUser.email || '').toLowerCase().trim();
+        let isAuthorizedAdmin = ['vigneshsivan2001@gmail.com', 'preethipreethu712@gmail.com'].includes(emailLower);
+
+        let resolvedProfile: UserProfile = {
+          uid: currentUser.uid,
+          displayName: currentUser.displayName || 'Baking Enthusiast',
+          email: currentUser.email || '',
+          photoURL: currentUser.photoURL || '',
+          role: isAuthorizedAdmin ? 'admin' : 'customer',
+          createdAt: new Date().toISOString(),
+          favorites: ['classic-fudge', 'salted-caramel'],
+        };
+
+        // 1. Sync user profile in Firestore (existing logic preserved)
         const userDocRef = doc(db, 'users', currentUser.uid);
         try {
-          const emailLower = (currentUser.email || '').toLowerCase().trim();
-          let isAuthorizedAdmin = ['vigneshsivan2001@gmail.com', 'preethipreethu712@gmail.com'].includes(emailLower);
-
           if (!isAuthorizedAdmin && emailLower) {
             try {
               const adminSnap = await getDoc(doc(db, 'settings', 'admins'));
@@ -93,6 +130,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                   : [];
                 if (emails.includes(emailLower)) {
                   isAuthorizedAdmin = true;
+                  resolvedProfile.role = 'admin';
                 }
               }
             } catch {}
@@ -104,25 +142,32 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             if (isAuthorizedAdmin && existingProfile.role !== 'admin') {
               const upgradedProfile: UserProfile = { ...existingProfile, role: 'admin' };
               await setDoc(userDocRef, { role: 'admin' }, { merge: true });
-              setUserProfile(upgradedProfile);
+              resolvedProfile = upgradedProfile;
             } else {
-              setUserProfile(existingProfile);
+              resolvedProfile = existingProfile;
             }
           } else {
-            const newProfile: UserProfile = {
-              uid: currentUser.uid,
-              displayName: currentUser.displayName || 'Baking Enthusiast',
-              email: currentUser.email || '',
-              photoURL: currentUser.photoURL || '',
-              role: isAuthorizedAdmin ? 'admin' : 'customer',
-              createdAt: new Date().toISOString(),
-              favorites: ['classic-fudge', 'salted-caramel'],
-            };
-            await setDoc(userDocRef, newProfile);
-            setUserProfile(newProfile);
+            await setDoc(userDocRef, resolvedProfile);
           }
         } catch (error) {
-          console.warn('Could not fetch user profile:', error);
+          console.warn('Could not fetch Firestore user profile, using server sync:', error);
+        }
+
+        setUserProfile(resolvedProfile);
+
+        // 2. Also sync user profile to MongoDB `users` collection via /api/users/sync
+        try {
+          const syncRes = await fetch('/api/users/sync', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(resolvedProfile),
+          });
+          const syncData = await syncRes.json();
+          if (syncRes.ok && syncData?.success && syncData?.user) {
+            setUserProfile(syncData.user as UserProfile);
+          }
+        } catch {
+          // Non-blocking background sync
         }
       } else {
         setUserProfile(null);
@@ -142,6 +187,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return;
     }
 
+    let cancelled = false;
+    fetch(`/api/registrations?userId=${encodeURIComponent(user.uid)}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (!cancelled && Array.isArray(data?.registrations)) {
+          setUserRegistrations(data.registrations);
+        }
+      })
+      .catch(() => {});
+
     const regColPath = 'class_registrations';
     const q = query(collection(db, regColPath), where('userId', '==', user.uid));
     const unsubscribe = onSnapshot(
@@ -151,14 +206,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         snapshot.forEach((d) => {
           regs.push({ id: d.id, ...d.data() } as ClassRegistration);
         });
-        setUserRegistrations(regs);
+        if (regs.length > 0) {
+          setUserRegistrations((prev) => {
+            const byId = new Map<string, ClassRegistration>();
+            for (const p of prev) if (p.id) byId.set(p.id, p);
+            for (const r of regs) if (r.id) byId.set(r.id, r);
+            return Array.from(byId.values());
+          });
+        }
       },
       (error) => {
-        handleFirestoreError(error, OperationType.GET, regColPath);
+        console.warn('Registrations listener fallback:', error);
       }
     );
 
-    return () => unsubscribe();
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
   }, [user]);
 
   // Listen to user inquiries when user is logged in, or load from localStorage if guest
@@ -177,6 +242,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return;
     }
 
+    let cancelled = false;
+    fetch(`/api/inquiries?userId=${encodeURIComponent(user.uid)}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (!cancelled && Array.isArray(data?.inquiries)) {
+          setUserInquiries(data.inquiries);
+        }
+      })
+      .catch(() => {});
+
     const inqColPath = 'inquiries';
     const q = query(collection(db, inqColPath), where('userId', '==', user.uid));
     const unsubscribe = onSnapshot(
@@ -186,14 +261,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         snapshot.forEach((d) => {
           inqs.push({ id: d.id, ...d.data() } as Inquiry);
         });
-        setUserInquiries(inqs);
+        if (inqs.length > 0) {
+          setUserInquiries((prev) => {
+            const byId = new Map<string, Inquiry>();
+            for (const p of prev) if (p.id) byId.set(p.id, p);
+            for (const i of inqs) if (i.id) byId.set(i.id, i);
+            return Array.from(byId.values());
+          });
+        }
       },
       (error) => {
         console.warn('Inquiries listener fallback:', error);
       }
     );
 
-    return () => unsubscribe();
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
   }, [user]);
 
   const signInWithGoogle = async (): Promise<User | null> => {
@@ -223,33 +308,60 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const registerForClass = async (className: string, preferredDate?: string, notes?: string) => {
-    if (!user) {
-      throw new Error('Please sign in with Google to register for a class.');
+  const registerForClass = async (
+    className: string,
+    preferredDate?: string,
+    notes?: string,
+    options?: ClassRegistrationOptions
+  ) => {
+    const resolvedName = (options?.userName || user?.displayName || '').trim();
+    const resolvedEmail = (options?.userEmail || user?.email || '').trim();
+
+    if (!user && !resolvedEmail) {
+      throw new Error('Please sign in with Google or provide your name and email to register for a class.');
     }
-    const path = 'class_registrations';
+
+    const payload = {
+      userId: user?.uid || `guest_${Date.now()}`,
+      userEmail: resolvedEmail,
+      userName: resolvedName || 'Baking Student',
+      userPhone: (options?.userPhone || '').trim(),
+      ...(options?.classId ? { classId: options.classId } : {}),
+      ...(options?.idempotencyKey ? { idempotencyKey: options.idempotencyKey } : {}),
+      className,
+      preferredDate: preferredDate || 'Next Available Batch',
+      notes: notes || '',
+      status: options?.status || ('registered' as const),
+      createdAt: new Date().toISOString(),
+    };
+
+    const res = await fetch('/api/registrations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (!res.ok || !data?.success || !data?.registration) {
+      throw new Error(data?.error || 'Failed to save class registration to the database.');
+    }
+
+    setUserRegistrations((prev) => [
+      data.registration,
+      ...prev.filter((r) => r.id !== data.registration.id),
+    ]);
+
     try {
-      await addDoc(collection(db, path), {
-        userId: user.uid,
-        userEmail: user.email || '',
-        userName: user.displayName || 'Baking Student',
-        className,
-        preferredDate: preferredDate || 'Next Available Batch',
-        notes: notes || '',
-        status: 'registered',
-        createdAt: new Date().toISOString(),
-      });
-    } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, path);
+      await setDoc(doc(db, 'class_registrations', data.registration.id), data.registration);
+    } catch {
+      // Already saved in MongoDB & server database
     }
   };
 
   const submitInquiry = async (
     subject: string,
     message: string,
-    contactInfo?: { name?: string; email?: string; phone?: string }
+    contactInfo?: InquirySubmissionOptions
   ) => {
-    const path = 'inquiries';
     const guestId = `guest_${Date.now()}`;
     const inquiryData = {
       userId: user?.uid || guestId,
@@ -258,22 +370,41 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       userPhone: contactInfo?.phone || '',
       subject,
       message,
+      ...(contactInfo?.eventType ? { eventType: contactInfo.eventType } : {}),
+      ...(contactInfo?.eventDate ? { eventDate: contactInfo.eventDate } : {}),
+      ...(contactInfo?.guestCount ? { guestCount: contactInfo.guestCount } : {}),
+      ...(contactInfo?.deliveryType ? { deliveryType: contactInfo.deliveryType } : {}),
+      ...(contactInfo?.deliveryAddress ? { deliveryAddress: contactInfo.deliveryAddress } : {}),
+      ...(contactInfo?.requireDeliveryAddress ? { requireDeliveryAddress: true } : {}),
+      ...(contactInfo?.idempotencyKey ? { idempotencyKey: contactInfo.idempotencyKey } : {}),
       status: 'new' as const,
       createdAt: new Date().toISOString(),
     };
 
+    const res = await fetch('/api/inquiries', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(inquiryData),
+    });
+    const data = await res.json();
+    if (!res.ok || !data?.success || !data?.inquiry) {
+      throw new Error(data?.error || 'Failed to submit order inquiry to the database.');
+    }
+
+    const savedInq = data.inquiry;
+
     try {
-      await addDoc(collection(db, path), inquiryData);
-    } catch (error) {
-      console.warn('Could not save inquiry to Firestore directly, cached locally:', error);
+      await setDoc(doc(db, 'inquiries', savedInq.id), savedInq);
+    } catch {
+      // Already saved in MongoDB & server database
     }
 
     try {
       const stored = localStorage.getItem('browinegirl_customer_inquiries');
       const list = stored ? JSON.parse(stored) : [];
-      list.unshift({ id: guestId, ...inquiryData });
-      localStorage.setItem('browinegirl_customer_inquiries', JSON.stringify(list));
-      setUserInquiries((prev) => [{ id: guestId, ...inquiryData }, ...prev]);
+      const deduped = [savedInq, ...list.filter((item: any) => item?.id !== savedInq.id)];
+      localStorage.setItem('browinegirl_customer_inquiries', JSON.stringify(deduped));
+      setUserInquiries((prev) => [savedInq, ...prev.filter((i) => i.id !== savedInq.id)]);
     } catch {}
   };
 
@@ -285,6 +416,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       : [...currentFavs, brownieId];
 
     setUserProfile({ ...userProfile, favorites: updatedFavs });
+
+    // Sync to MongoDB `users` collection
+    fetch(`/api/users/${encodeURIComponent(user.uid)}/favorites`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ favorites: updatedFavs }),
+    }).catch(() => {});
+
     const userDocPath = `users/${user.uid}`;
     try {
       await setDoc(doc(db, 'users', user.uid), { favorites: updatedFavs }, { merge: true });

@@ -70,20 +70,6 @@ export const parsePriceNumber = (priceStr?: string | number): number => {
 
 const CART_STORAGE_KEY = 'browinegirl_shopping_cart_v1';
 const ORDERS_STORAGE_KEY = 'browinegirl_cart_orders_v1';
-const ORDER_SEQ_KEY = 'browinegirl_order_seq_v1';
-
-const generateNextOrderId = (): string => {
-  try {
-    const raw = localStorage.getItem(ORDER_SEQ_KEY);
-    const current = raw ? parseInt(raw, 10) : 1024;
-    const next = isNaN(current) || current < 1024 ? 1025 : current + 1;
-    localStorage.setItem(ORDER_SEQ_KEY, String(next));
-    return `BGC${next}`;
-  } catch {
-    const rand = Math.floor(1025 + Math.random() * 8900);
-    return `BGC${rand}`;
-  }
-};
 
 interface CartContextType {
   cartItems: CartItem[];
@@ -116,6 +102,7 @@ interface CartContextType {
     customerEmail?: string;
     deliveryAddress: string;
     specialInstructions?: string;
+    idempotencyKey?: string;
     authenticatedUser?: { uid: string; email?: string | null; displayName?: string | null } | null;
   }) => Promise<CartOrderRecord>;
 }
@@ -260,18 +247,27 @@ export const CartProvider: React.FC<{ children: React.ReactNode }> = ({ children
     customerEmail?: string;
     deliveryAddress: string;
     specialInstructions?: string;
+    idempotencyKey?: string;
     authenticatedUser?: { uid: string; email?: string | null; displayName?: string | null } | null;
   }): Promise<CartOrderRecord> => {
     const activeUser = details.authenticatedUser || user;
-    if (!activeUser) {
-      throw new Error('Please sign in to place an order.');
-    }
-    if (!details.deliveryAddress || !details.deliveryAddress.trim()) {
-      throw new Error('Please enter your delivery address.');
-    }
+    const resolvedName = (details.customerName || activeUser?.displayName || '').trim();
+    const resolvedPhone = (details.customerPhone || '').trim();
+    const resolvedEmail = (details.customerEmail || activeUser?.email || '').trim();
+    const resolvedAddress = (details.deliveryAddress || '').trim();
 
-    const orderId = generateNextOrderId();
-    const nowIso = new Date().toISOString();
+    if (!resolvedName) {
+      throw new Error('Please enter your full name.');
+    }
+    if (!resolvedPhone) {
+      throw new Error('Please enter your WhatsApp / mobile number.');
+    }
+    if (!resolvedAddress) {
+      throw new Error('Please enter your complete delivery address.');
+    }
+    if (cartItems.length === 0) {
+      throw new Error('Your cart is empty. Please add at least one cake or brownie item.');
+    }
 
     const orderItems: OrderProductEntry[] = cartItems.map((c) => {
       const selectedWeight = c.weight || c.variantLabel;
@@ -290,104 +286,60 @@ export const CartProvider: React.FC<{ children: React.ReactNode }> = ({ children
       };
     });
 
-    const hasRegularBrownie = orderItems.some((i) => i.category === 'brownie');
-    const hasFrostedBrownie = orderItems.some((i) => i.category === 'frosted_brownie');
+    // 1. Persist to production backend API (/api/orders) and wait for database confirmation
+    const response = await fetch('/api/orders', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        userId: activeUser?.uid || `guest_${Date.now()}`,
+        customerName: resolvedName,
+        customerEmail: resolvedEmail,
+        customerPhone: resolvedPhone,
+        deliveryAddress: resolvedAddress,
+        specialInstructions: (details.specialInstructions || '').trim(),
+        items: orderItems,
+        idempotencyKey: details.idempotencyKey,
+      }),
+    });
 
-    const newOrder: CartOrderRecord = {
-      id: orderId,
-      orderId,
-      userId: activeUser.uid,
-      customerName: (details.customerName || activeUser.displayName || 'Customer').trim(),
-      customerEmail: (details.customerEmail || activeUser.email || '').trim(),
-      customerPhone: details.customerPhone.trim(),
-      deliveryAddress: details.deliveryAddress?.trim() || '',
-      specialInstructions: details.specialInstructions?.trim() || '',
-      items: orderItems,
-      totalAmount: formatRupee(cartTotal),
-      totalAmountNumeric: cartTotal,
-      hasFrostedAddon: hasRegularBrownie && hasFrostedBrownie,
-      status: 'received',
-      isRead: false,
-      createdAt: nowIso,
-      updatedAt: nowIso,
-    };
+    let responseData: { success?: boolean; order?: CartOrderRecord; error?: string } | null = null;
+    try {
+      responseData = await response.json();
+    } catch {
+      throw new Error('Unable to communicate with the order server. Please check your connection and try again.');
+    }
 
-    // 1. Save to localStorage immediately so Admin Panel on same device sees it even offline
+    if (!response.ok || !responseData?.success || !responseData?.order) {
+      throw new Error(
+        responseData?.error || 'Could not save your order to the database. Please try again.'
+      );
+    }
+
+    const savedOrder: CartOrderRecord = responseData.order;
+
+    // 2. Also attempt client-side Firestore write as secondary real-time push when quota is available
+    try {
+      await setDoc(doc(db, 'orders', savedOrder.orderId), savedOrder);
+    } catch {
+      // Server already persisted the order in production_db.json and attempted Firestore sync
+    }
+
+    // 3. Update local cache with the confirmed database record
     try {
       const existingRaw = localStorage.getItem(ORDERS_STORAGE_KEY);
       const existingList: CartOrderRecord[] = existingRaw ? JSON.parse(existingRaw) : [];
-      const updatedList = [newOrder, ...existingList.filter((o) => o.orderId !== orderId)];
+      const updatedList = [
+        savedOrder,
+        ...existingList.filter((o) => o.orderId !== savedOrder.orderId),
+      ];
       localStorage.setItem(ORDERS_STORAGE_KEY, JSON.stringify(updatedList));
     } catch {}
 
-    // 2. Persist to Firestore 'orders' collection under the single Order ID (e.g. BGC1025)
-    try {
-      await setDoc(doc(db, 'orders', orderId), {
-        id: newOrder.id,
-        orderId: newOrder.orderId,
-        userId: newOrder.userId,
-        customerName: newOrder.customerName,
-        customerEmail: newOrder.customerEmail,
-        customerPhone: newOrder.customerPhone,
-        deliveryAddress: newOrder.deliveryAddress || '',
-        specialInstructions: newOrder.specialInstructions || '',
-        items: newOrder.items,
-        totalAmount: newOrder.totalAmount,
-        status: newOrder.status,
-        createdAt: newOrder.createdAt,
-        updatedAt: newOrder.updatedAt,
-      });
-    } catch (err) {
-      console.warn('Firestore orders save warning (saved locally):', err);
-    }
-
-    // 3. Also log a synchronized entry in 'inquiries' so all admin order views include it
-    try {
-      const itemizedLines = newOrder.items
-        .map((item) => {
-          const catBadge =
-            item.category === 'cake_normal'
-              ? ' [Cake Menu - Normal Flavours]'
-              : item.category === 'cake_premium'
-              ? ' [Cake Menu - Premium Flavours]'
-              : item.category === 'frosted_brownie'
-              ? ' [Frosted Brownie Add-on]'
-              : '';
-          return `• ${item.name}${catBadge} – ${item.quantity} × ${item.unitPriceFormatted} = ${item.lineTotalFormatted}`;
-        })
-        .join('\n');
-
-      const summaryMessage = [
-        `Order ID: ${newOrder.orderId}`,
-        `Customer: ${newOrder.customerName}`,
-        `Phone: ${newOrder.customerPhone}`,
-        newOrder.deliveryAddress ? `Delivery / Pickup: ${newOrder.deliveryAddress}` : null,
-        `\nProducts:`,
-        itemizedLines,
-        `\nGrand Total: ${newOrder.totalAmount}`,
-        newOrder.specialInstructions ? `\nSpecial Notes: ${newOrder.specialInstructions}` : null,
-      ]
-        .filter(Boolean)
-        .join('\n');
-
-      await setDoc(doc(db, 'inquiries', `order_${orderId}`), {
-        userId: newOrder.userId,
-        userName: newOrder.customerName,
-        userEmail: newOrder.customerEmail,
-        userPhone: newOrder.customerPhone,
-        subject: `Order ID: ${newOrder.orderId} (${newOrder.items.length} Product${newOrder.items.length > 1 ? 's' : ''} — Grand Total: ${newOrder.totalAmount})`,
-        message: summaryMessage,
-        status: 'new',
-        isRead: false,
-        createdAt: nowIso,
-      });
-    } catch (err) {
-      console.warn('Firestore inquiry mirror warning:', err);
-    }
-
     clearCart();
     setPreservedSelection(null);
-    return newOrder;
+    return savedOrder;
   };
 
   return (

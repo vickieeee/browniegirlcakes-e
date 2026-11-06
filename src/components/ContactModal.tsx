@@ -19,6 +19,9 @@ export const ContactModal: React.FC<ContactModalProps> = ({ isOpen, onClose }) =
   const [submitted, setSubmitted] = useState(false);
   const [lastWhatsappUrl, setLastWhatsappUrl] = useState('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [submissionKey, setSubmissionKey] = useState<string>(
+    () => `contact_inq_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+  );
 
   if (!isOpen) return null;
 
@@ -26,6 +29,7 @@ export const ContactModal: React.FC<ContactModalProps> = ({ isOpen, onClose }) =
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
     setErrorMsg(null);
 
     let activeUser = user;
@@ -47,7 +51,9 @@ export const ContactModal: React.FC<ContactModalProps> = ({ isOpen, onClose }) =
       await submitInquiry(subject, fullMessage, {
         name: activeUser?.displayName || 'Customer',
         email: activeUser?.email || '',
-        phone: customerPhone,
+        phone: customerPhone.trim(),
+        eventType: subject,
+        idempotencyKey: submissionKey,
       });
 
       const waText = `Hello BrowineGirlCakes! I have an order / inquiry:
@@ -60,9 +66,10 @@ export const ContactModal: React.FC<ContactModalProps> = ({ isOpen, onClose }) =
       const waUrl = buildWhatsAppUrl(whatsappNum, waText);
       setLastWhatsappUrl(waUrl);
       setSubmitted(true);
+      setSubmissionKey(`contact_inq_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
     } catch (err) {
       console.error(err);
-      setErrorMsg('Failed to send message. Please try again.');
+      setErrorMsg(err instanceof Error ? err.message : 'Failed to send message. Please try again.');
     } finally {
       setIsSubmitting(false);
     }
@@ -73,6 +80,7 @@ export const ContactModal: React.FC<ContactModalProps> = ({ isOpen, onClose }) =
     setErrorMsg(null);
     setMessage('');
     setCustomerPhone('');
+    setSubmissionKey(`contact_inq_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
     onClose();
   };
 

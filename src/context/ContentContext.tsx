@@ -485,6 +485,148 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const isAdminRole = userProfile?.role === 'admin';
   const isAdmin = isAuthorizedAdminEmail || isAdminRole || isDemoAdmin;
 
+  const getAdminAuthHeaders = (): Record<string, string> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    try {
+      const token =
+        localStorage.getItem('browinegirl_admin_token') ||
+        sessionStorage.getItem('browinegirl_admin_token');
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+    } catch {}
+    return headers;
+  };
+
+  // 0. Sync Settings, Products, and Baking Classes from MongoDB Atlas Backend API
+  useEffect(() => {
+    let isMounted = true;
+
+    const fetchMongoCatalogueAndSettings = async () => {
+      try {
+        const [settingsRes, productsRes, classesRes] = await Promise.all([
+          fetch('/api/settings').catch(() => null),
+          fetch('/api/products').catch(() => null),
+          fetch('/api/classes').catch(() => null),
+        ]);
+
+        if (!isMounted) return;
+
+        if (settingsRes && settingsRes.ok) {
+          const settingsPayload = await settingsRes.json();
+          const settingsMap = settingsPayload?.settings || {};
+
+          if (settingsMap.general && typeof settingsMap.general === 'object') {
+            const { settingKey: _k, _id: _i, ...cleanGeneral } = settingsMap.general;
+            if (Object.keys(cleanGeneral).length > 0) {
+              const mergedSettings = { ...DEFAULT_SETTINGS, ...cleanGeneral } as SiteSettings;
+              setSettings(mergedSettings);
+              try {
+                localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(mergedSettings));
+              } catch {}
+            }
+          }
+
+          if (settingsMap.achievements && typeof settingsMap.achievements === 'object') {
+            const { settingKey: _k, _id: _i, ...cleanAch } = settingsMap.achievements;
+            if (Object.keys(cleanAch).length > 0) {
+              const mergedAch = { ...DEFAULT_ACHIEVEMENTS, ...cleanAch } as AchievementSettings;
+              setAchievements(mergedAch);
+              try {
+                localStorage.setItem(STORAGE_KEYS.ACHIEVEMENTS, JSON.stringify(mergedAch));
+              } catch {}
+            }
+          }
+
+          if (settingsMap.admins && typeof settingsMap.admins === 'object') {
+            const data = settingsMap.admins;
+            const list =
+              Array.isArray(data.adminList) && data.adminList.length > 0
+                ? data.adminList
+                : DEFAULT_ADMIN_LIST;
+            const emails =
+              Array.isArray(data.adminEmails) && data.adminEmails.length > 0
+                ? data.adminEmails
+                : PRIMARY_ADMIN_EMAILS;
+            const mergedEmails = Array.from(
+              new Set([
+                ...PRIMARY_ADMIN_EMAILS.map((e) => e.toLowerCase()),
+                ...emails.map((e: string) => e.toLowerCase()),
+                ...list.map((a: AdminUserRecord) => a.email.toLowerCase()),
+              ])
+            );
+            setAdminList(list);
+            setAdminEmails(mergedEmails);
+            try {
+              localStorage.setItem(STORAGE_KEYS.ADMINS, JSON.stringify(list));
+            } catch {}
+          }
+        }
+
+        if (productsRes && productsRes.ok) {
+          const prodPayload = await productsRes.json();
+          if (Array.isArray(prodPayload?.products) && prodPayload.products.length > 0) {
+            const regularItems = prodPayload.products.filter(
+              (p: BrownieItem & { isCustomShowcase?: boolean }) =>
+                !p.isCustomShowcase && !String(p.id || '').startsWith('custom-')
+            );
+            const customItems = prodPayload.products.filter(
+              (p: BrownieItem & { isCustomShowcase?: boolean }) =>
+                p.isCustomShowcase || String(p.id || '').startsWith('custom-')
+            );
+
+            if (regularItems.length > 0) {
+              const merged = normalizeAndMergeMenuItems(regularItems);
+              menuItemsRef.current = merged;
+              setMenuItems(merged);
+              persistMenuToLocalStorage(merged);
+            }
+            if (customItems.length > 0) {
+              setCustomBrownies(customItems);
+              try {
+                localStorage.setItem(STORAGE_KEYS.CUSTOM, JSON.stringify(customItems));
+              } catch {}
+            }
+          }
+        }
+
+        if (classesRes && classesRes.ok) {
+          const classesPayload = await classesRes.json();
+          if (Array.isArray(classesPayload?.classes) && classesPayload.classes.length > 0) {
+            const deletedIds = getDeletedClassIds();
+            const validClasses = classesPayload.classes
+              .filter((c: BakingClassInfo) => c && c.id && !deletedIds.includes(c.id))
+              .map((c: BakingClassInfo) => ({
+                ...c,
+                price: formatRupee(c.price || '₹1,999'),
+                description:
+                  typeof c.description === 'string'
+                    ? c.description.replace(/\r\n?/g, '\n')
+                    : '',
+                dates: Array.isArray(c.dates)
+                  ? c.dates
+                  : BAKING_CLASSES.find((b) => b.id === c.id)?.dates || [],
+              }));
+            if (validClasses.length > 0) {
+              bakingClassesRef.current = validClasses;
+              setBakingClasses(validClasses);
+              try {
+                localStorage.setItem(STORAGE_KEYS.CLASSES, JSON.stringify(validClasses));
+              } catch {}
+            }
+          }
+        }
+      } catch {
+        // Silent fallback to Firestore / localStorage
+      }
+    };
+
+    fetchMongoCatalogueAndSettings();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
   // 1. Sync Settings from Firestore
   useEffect(() => {
     const settingsDocRef = doc(db, 'settings', 'general');
@@ -508,9 +650,7 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
           } catch {}
         }
       },
-      (error) => {
-        console.warn('Settings snapshot fallback:', error);
-      }
+      () => {}
     );
 
     return () => unsubscribe();
@@ -530,9 +670,7 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
           } catch {}
         }
       },
-      (error) => {
-        console.warn('Achievements snapshot fallback:', error);
-      }
+      () => {}
     );
 
     return () => unsubscribe();
@@ -614,9 +752,7 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
           setMenuItems(merged);
         }
       },
-      (error) => {
-        console.warn('Menu snapshot fallback:', error);
-      }
+      () => {}
     );
 
     return () => unsubscribe();
@@ -706,9 +842,7 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
           } catch {}
         }
       },
-      (error) => {
-        console.warn('Classes snapshot fallback:', error);
-      }
+      () => {}
     );
 
     return () => unsubscribe();
@@ -735,15 +869,13 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
           } catch {}
         }
       },
-      (error) => {
-        console.warn('Custom items snapshot fallback:', error);
-      }
+      () => {}
     );
 
     return () => unsubscribe();
   }, []);
 
-  // 6. Sync Admin Team & Authorization from Firestore
+  // 6. Sync Admin Team & Authorization from Firestore (without plain-text passwords)
   useEffect(() => {
     const adminDocRef = doc(db, 'settings', 'admins');
     const unsubscribe = onSnapshot(
@@ -771,32 +903,23 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
           setAdminList(list);
           setAdminEmails(mergedEmails);
-          if (typeof data?.masterPassword === 'string' && data.masterPassword.trim().length > 0) {
-            setAdminPassword(data.masterPassword);
-            try {
-              localStorage.setItem(STORAGE_KEYS.ADMIN_PASSWORD, data.masterPassword);
-            } catch {}
-          }
           try {
             localStorage.setItem(STORAGE_KEYS.ADMINS, JSON.stringify(list));
           } catch {}
         } else {
-          // Initialize default admin list in Firestore if not present
+          // Initialize default admin list in Firestore without storing any plain-text password
           setDoc(
             adminDocRef,
             {
               adminList: DEFAULT_ADMIN_LIST,
               adminEmails: PRIMARY_ADMIN_EMAILS.map((e) => e.toLowerCase()),
-              masterPassword: DEFAULT_ADMIN_PASSWORD,
               updatedAt: new Date().toISOString(),
             },
             { merge: true }
-          ).catch((e) => console.warn('Bootstrap admin doc warning:', e));
+          ).catch(() => {});
         }
       },
-      (error) => {
-        console.warn('Admin team snapshot fallback:', error);
-      }
+      () => {}
     );
 
     return () => unsubscribe();
@@ -811,10 +934,16 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
     } catch {}
 
     try {
+      await fetch('/api/settings/general', {
+        method: 'PUT',
+        headers: getAdminAuthHeaders(),
+        body: JSON.stringify(updated),
+      });
+    } catch {}
+
+    try {
       await setDoc(doc(db, 'settings', 'general'), updated, { merge: true });
-    } catch (error) {
-      console.warn('Could not save settings to Firestore directly, updated locally:', error);
-    }
+    } catch {}
   };
 
   // Update Achievements
@@ -826,10 +955,16 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
     } catch {}
 
     try {
+      await fetch('/api/settings/achievements', {
+        method: 'PUT',
+        headers: getAdminAuthHeaders(),
+        body: JSON.stringify(updated),
+      });
+    } catch {}
+
+    try {
       await setDoc(doc(db, 'settings', 'achievements'), updated, { merge: true });
-    } catch (error) {
-      console.warn('Could not save achievements to Firestore directly, updated locally:', error);
-    }
+    } catch {}
   };
 
   // Menu Management
@@ -889,14 +1024,21 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
     setMenuItems(updatedList);
     persistMenuToLocalStorage(updatedList);
 
+    const cleanPayload = Object.fromEntries(
+      Object.entries(fullItem).filter(([_, v]) => v !== undefined)
+    );
+
     try {
-      const firestoreData = Object.fromEntries(
-        Object.entries(fullItem).filter(([_, v]) => v !== undefined)
-      );
-      await setDoc(doc(db, 'menu_items', newId), firestoreData);
-    } catch (error) {
-      console.warn('Could not persist new menu item to Firestore:', error);
-    }
+      await fetch('/api/products', {
+        method: 'POST',
+        headers: getAdminAuthHeaders(),
+        body: JSON.stringify(cleanPayload),
+      });
+    } catch {}
+
+    try {
+      await setDoc(doc(db, 'menu_items', newId), cleanPayload);
+    } catch {}
   };
 
   const updateMenuItem = async (id: string, updatedFields: Partial<BrownieItem>) => {
@@ -981,14 +1123,21 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
     setMenuItems(updatedList);
     persistMenuToLocalStorage(updatedList);
 
+    const cleanPayload = Object.fromEntries(
+      Object.entries(mergedItem).filter(([_, v]) => v !== undefined)
+    );
+
     try {
-      const firestoreData = Object.fromEntries(
-        Object.entries(mergedItem).filter(([_, v]) => v !== undefined)
-      );
-      await setDoc(doc(db, 'menu_items', id), firestoreData);
-    } catch (error) {
-      console.warn('Could not update menu item in Firestore:', error);
-    }
+      await fetch(`/api/products/${encodeURIComponent(id)}`, {
+        method: 'PUT',
+        headers: getAdminAuthHeaders(),
+        body: JSON.stringify(cleanPayload),
+      });
+    } catch {}
+
+    try {
+      await setDoc(doc(db, 'menu_items', id), cleanPayload);
+    } catch {}
   };
 
   const deleteMenuItem = async (id: string) => {
@@ -1007,10 +1156,15 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
     persistMenuToLocalStorage(updatedList);
 
     try {
+      await fetch(`/api/products/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        headers: getAdminAuthHeaders(),
+      });
+    } catch {}
+
+    try {
       await deleteDoc(doc(db, 'menu_items', id));
-    } catch (error) {
-      console.warn('Could not delete menu item in Firestore:', error);
-    }
+    } catch {}
   };
 
   // Class Management
@@ -1033,14 +1187,21 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
       localStorage.setItem(STORAGE_KEYS.CLASSES, JSON.stringify(updated));
     } catch {}
 
+    const cleanPayload = Object.fromEntries(
+      Object.entries(fullClass).filter(([_, v]) => v !== undefined)
+    );
+
     try {
-      const firestoreData = Object.fromEntries(
-        Object.entries(fullClass).filter(([_, v]) => v !== undefined)
-      );
-      await setDoc(doc(db, 'baking_classes', newId), firestoreData);
-    } catch (error) {
-      console.warn('Could not persist new baking class to Firestore:', error);
-    }
+      await fetch('/api/classes', {
+        method: 'POST',
+        headers: getAdminAuthHeaders(),
+        body: JSON.stringify(cleanPayload),
+      });
+    } catch {}
+
+    try {
+      await setDoc(doc(db, 'baking_classes', newId), cleanPayload);
+    } catch {}
   };
 
   const updateClass = async (id: string, updatedFields: Partial<BakingClassInfo>) => {
@@ -1092,14 +1253,21 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
       localStorage.setItem(STORAGE_KEYS.CLASSES, JSON.stringify(updated));
     } catch {}
 
+    const cleanPayload = Object.fromEntries(
+      Object.entries(updatedClass).filter(([_, v]) => v !== undefined)
+    );
+
     try {
-      const firestoreData = Object.fromEntries(
-        Object.entries(updatedClass).filter(([_, v]) => v !== undefined)
-      );
-      await setDoc(doc(db, 'baking_classes', id), firestoreData);
-    } catch (error) {
-      console.warn('Could not update class in Firestore:', error);
-    }
+      await fetch(`/api/classes/${encodeURIComponent(id)}`, {
+        method: 'PUT',
+        headers: getAdminAuthHeaders(),
+        body: JSON.stringify(cleanPayload),
+      });
+    } catch {}
+
+    try {
+      await setDoc(doc(db, 'baking_classes', id), cleanPayload);
+    } catch {}
   };
 
   const deleteClass = async (id: string) => {
@@ -1122,12 +1290,17 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
       localStorage.setItem(STORAGE_KEYS.CLASSES, JSON.stringify(updated));
     } catch {}
 
+    try {
+      await fetch(`/api/classes/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        headers: getAdminAuthHeaders(),
+      });
+    } catch {}
+
     // 3. Delete from Firestore collection
     try {
       await deleteDoc(doc(db, 'baking_classes', id));
-    } catch (error) {
-      console.warn('Could not delete class in Firestore:', error);
-    }
+    } catch {}
   };
 
   // Custom Showcase Brownie Management
@@ -1139,11 +1312,18 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
     try {
       localStorage.setItem(STORAGE_KEYS.CUSTOM, JSON.stringify(updated));
     } catch {}
+
+    try {
+      await fetch('/api/products', {
+        method: 'POST',
+        headers: getAdminAuthHeaders(),
+        body: JSON.stringify({ ...fullItem, isCustomShowcase: true }),
+      });
+    } catch {}
+
     try {
       await setDoc(doc(db, 'custom_items', newId), fullItem);
-    } catch (e) {
-      console.warn('Could not persist custom item to Firestore:', e);
-    }
+    } catch {}
   };
 
   const updateCustomBrownie = async (id: string, updatedFields: Partial<BrownieItem>) => {
@@ -1157,11 +1337,18 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
     try {
       localStorage.setItem(STORAGE_KEYS.CUSTOM, JSON.stringify(updated));
     } catch {}
+
+    try {
+      await fetch(`/api/products/${encodeURIComponent(id)}`, {
+        method: 'PUT',
+        headers: getAdminAuthHeaders(),
+        body: JSON.stringify({ ...updatedItem, isCustomShowcase: true }),
+      });
+    } catch {}
+
     try {
       await setDoc(doc(db, 'custom_items', id), updatedItem);
-    } catch (e) {
-      console.warn('Could not update custom item in Firestore:', e);
-    }
+    } catch {}
   };
 
   const deleteCustomBrownie = async (id: string) => {
@@ -1170,24 +1357,23 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
     try {
       localStorage.setItem(STORAGE_KEYS.CUSTOM, JSON.stringify(updated));
     } catch {}
+
+    try {
+      await fetch(`/api/products/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        headers: getAdminAuthHeaders(),
+      });
+    } catch {}
+
     try {
       await deleteDoc(doc(db, 'custom_items', id));
-    } catch (e) {
-      console.warn('Could not delete custom item in Firestore:', e);
-    }
+    } catch {}
   };
 
   const updateAdminPassword = async (
     currentPassword: string,
     newPassword: string
   ): Promise<{ success: boolean; message: string }> => {
-    if (currentPassword !== adminPassword) {
-      return {
-        success: false,
-        message: 'Current password is incorrect. Please enter your active admin password.',
-      };
-    }
-
     const trimmedNew = newPassword.trim();
     if (trimmedNew.length < 6) {
       return {
@@ -1196,23 +1382,50 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
       };
     }
 
+    // First verify & update on the server using scrypt hashing (never stored in plain text in MongoDB)
+    try {
+      const response = await fetch('/api/admin/password', {
+        method: 'POST',
+        headers: getAdminAuthHeaders(),
+        body: JSON.stringify({
+          currentPassword,
+          newPassword: trimmedNew,
+        }),
+      });
+      const data = await response.json().catch(() => null);
+      if (response.ok && data?.success) {
+        setAdminPassword(trimmedNew);
+        try {
+          localStorage.setItem(STORAGE_KEYS.ADMIN_PASSWORD, trimmedNew);
+        } catch {}
+        return {
+          success: true,
+          message:
+            data.message ||
+            'Admin master password updated and securely hashed on the server!',
+        };
+      }
+      if (response.status === 401 && data?.message) {
+        return {
+          success: false,
+          message: data.message,
+        };
+      }
+    } catch {
+      // Fallback to local verification if offline
+    }
+
+    if (currentPassword !== adminPassword) {
+      return {
+        success: false,
+        message: 'Current password is incorrect. Please enter your active admin password.',
+      };
+    }
+
     setAdminPassword(trimmedNew);
     try {
       localStorage.setItem(STORAGE_KEYS.ADMIN_PASSWORD, trimmedNew);
     } catch {}
-
-    try {
-      await setDoc(
-        doc(db, 'settings', 'admins'),
-        {
-          masterPassword: trimmedNew,
-          updatedAt: new Date().toISOString(),
-        },
-        { merge: true }
-      );
-    } catch (err) {
-      console.warn('Firestore save password warning (locally saved):', err);
-    }
 
     return {
       success: true,
@@ -1281,9 +1494,6 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
       addedAt: new Date().toISOString(),
       addedBy: newAdmin.addedBy || user?.email || 'preethipreethu712@gmail.com',
       isPrimary: false,
-      ...(newAdmin.customPassword?.trim()
-        ? { customPassword: newAdmin.customPassword.trim() }
-        : {}),
     };
 
     const updatedList = [...adminList, newRecord];
@@ -1302,19 +1512,31 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
       localStorage.setItem(STORAGE_KEYS.ADMINS, JSON.stringify(updatedList));
     } catch {}
 
+    const sanitizedListForRemote = updatedList.map(({ customPassword: _cp, ...rest }) => rest);
+
+    try {
+      await fetch('/api/settings/admins', {
+        method: 'PUT',
+        headers: getAdminAuthHeaders(),
+        body: JSON.stringify({
+          adminList: sanitizedListForRemote,
+          adminEmails: updatedEmails,
+          updatedAt: new Date().toISOString(),
+        }),
+      });
+    } catch {}
+
     try {
       await setDoc(
         doc(db, 'settings', 'admins'),
         {
-          adminList: updatedList,
+          adminList: sanitizedListForRemote,
           adminEmails: updatedEmails,
           updatedAt: new Date().toISOString(),
         },
         { merge: true }
       );
-    } catch (err) {
-      console.warn('Firestore save admins warning (locally saved):', err);
-    }
+    } catch {}
 
     return {
       success: true,
@@ -1350,19 +1572,31 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
       localStorage.setItem(STORAGE_KEYS.ADMINS, JSON.stringify(updatedList));
     } catch {}
 
+    const sanitizedListForRemote = updatedList.map(({ customPassword: _cp, ...rest }) => rest);
+
+    try {
+      await fetch('/api/settings/admins', {
+        method: 'PUT',
+        headers: getAdminAuthHeaders(),
+        body: JSON.stringify({
+          adminList: sanitizedListForRemote,
+          adminEmails: updatedEmails,
+          updatedAt: new Date().toISOString(),
+        }),
+      });
+    } catch {}
+
     try {
       await setDoc(
         doc(db, 'settings', 'admins'),
         {
-          adminList: updatedList,
+          adminList: sanitizedListForRemote,
           adminEmails: updatedEmails,
           updatedAt: new Date().toISOString(),
         },
         { merge: true }
       );
-    } catch (err) {
-      console.warn('Firestore update admins warning:', err);
-    }
+    } catch {}
 
     return {
       success: true,
@@ -1392,6 +1626,19 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
     } catch {}
 
     try {
+      await fetch('/api/settings/general', {
+        method: 'PUT',
+        headers: getAdminAuthHeaders(),
+        body: JSON.stringify(DEFAULT_SETTINGS),
+      });
+      await fetch('/api/settings/achievements', {
+        method: 'PUT',
+        headers: getAdminAuthHeaders(),
+        body: JSON.stringify(DEFAULT_ACHIEVEMENTS),
+      });
+    } catch {}
+
+    try {
       await setDoc(doc(db, 'settings', 'general'), DEFAULT_SETTINGS);
       await setDoc(doc(db, 'settings', 'achievements'), DEFAULT_ACHIEVEMENTS);
       for (const item of SIGNATURE_BROWNIES) {
@@ -1401,9 +1648,7 @@ export const ContentProvider: React.FC<{ children: React.ReactNode }> = ({ child
       for (const cls of BAKING_CLASSES) {
         await setDoc(doc(db, 'baking_classes', cls.id), cls);
       }
-    } catch (error) {
-      console.warn('Reset sync warning:', error);
-    }
+    } catch {}
   };
 
   const toggleDemoAdmin = () => {

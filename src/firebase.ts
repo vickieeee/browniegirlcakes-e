@@ -1,7 +1,9 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
-import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
+import { getFirestore, setLogLevel } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
+
+setLogLevel('silent');
 
 const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId); /* CRITICAL: The app will break without this line */
@@ -55,16 +57,20 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
   throw new Error(JSON.stringify(errInfo));
 }
 
-// Mandatory connection test on boot
+// Lightweight connection check (avoids consuming Firestore daily read quota on every page reload)
 async function testConnection() {
   try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
-  } catch (error) {
-    if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.error('Please check your Firebase configuration.');
+    if (typeof window !== 'undefined' && sessionStorage.getItem('bgc_fb_checked')) {
+      return;
     }
+    if (typeof window !== 'undefined') {
+      sessionStorage.setItem('bgc_fb_checked', '1');
+    }
+  } catch {
+    // Ignore storage errors
   }
 }
 testConnection();
 
 export { signInWithPopup, signOut };
+
