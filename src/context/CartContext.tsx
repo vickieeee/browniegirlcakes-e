@@ -1,6 +1,4 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { doc, setDoc } from 'firebase/firestore';
-import { db } from '../firebase';
 import { BrownieItem, MenuCategory } from '../data/brownies';
 import { formatRupee } from '../utils/formatters';
 import { useAuth } from './AuthContext';
@@ -54,6 +52,7 @@ export interface CartOrderRecord {
   totalAmount: string;
   totalAmountNumeric: number;
   hasFrostedAddon?: boolean;
+  paymentStatus?: 'pending' | 'paid' | 'failed' | 'refunded' | 'cod';
   status: 'received' | 'baking' | 'finishing' | 'out_for_delivery' | 'delivered' | 'cancelled';
   isRead?: boolean;
   createdAt: string;
@@ -319,14 +318,7 @@ export const CartProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const savedOrder: CartOrderRecord = responseData.order;
 
-    // 2. Also attempt client-side Firestore write as secondary real-time push when quota is available
-    try {
-      await setDoc(doc(db, 'orders', savedOrder.orderId), savedOrder);
-    } catch {
-      // Server already persisted the order in production_db.json and attempted Firestore sync
-    }
-
-    // 3. Update local cache with the confirmed database record
+    // 2. Update local customer receipt cache with the confirmed database record
     try {
       const existingRaw = localStorage.getItem(ORDERS_STORAGE_KEY);
       const existingList: CartOrderRecord[] = existingRaw ? JSON.parse(existingRaw) : [];

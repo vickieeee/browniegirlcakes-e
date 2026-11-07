@@ -104,6 +104,37 @@ export function getMongoDbName(): string {
   return (process.env.MONGODB_DB_NAME || DEFAULT_DB_NAME).trim() || DEFAULT_DB_NAME;
 }
 
+export class MongoPersistenceError extends Error {
+  public readonly statusCode: number;
+  public readonly attempts: number;
+
+  constructor(message: string, statusCode = 503, attempts = 1) {
+    super(message);
+    this.name = 'MongoPersistenceError';
+    this.statusCode = statusCode;
+    this.attempts = attempts;
+  }
+}
+
+export function sanitizeMongoErrorMessage(err: unknown): string {
+  const rawMsg = err instanceof Error ? err.message : String(err);
+  return rawMsg.replace(/mongodb(\+srv)?:\/\/[^\s]+/gi, '[REDACTED_MONGODB_URI]');
+}
+
+function isNonRetryableMongoError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const anyErr = err as { code?: number | string; message?: string; statusCode?: number };
+  const msg = String(anyErr.message || '');
+  // Authentication failure or explicit 4xx validation/not-found errors should not be retried
+  if (/bad auth|authentication failed/i.test(msg)) return true;
+  if (typeof anyErr.statusCode === 'number' && anyErr.statusCode >= 400 && anyErr.statusCode < 500) {
+    return true;
+  }
+  return false;
+}
+
+const sleepMs = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
 /**
  * Internal helper that connects and returns the MongoClient.
  * Caches auth failure per URI so bad credentials do not spam network retries or console errors.
@@ -150,10 +181,111 @@ async function connectMongoClient(): Promise<MongoClient> {
   return globalThis.__bgcMongoClientPromise;
 }
 
+export interface MongoRetryOptions {
+  maxAttempts?: number;
+  baseDelayMs?: number;
+}
+
+/**
+ * Connects to the active environment's MongoDB database (`browniegirl` in Dev, `browniegirlcakes` in Prod)
+ * with bounded retries on transient connection failures. Throws MongoPersistenceError (HTTP 503) if unreachable.
+ */
+export async function getAuthoritativeMongoDatabase(
+  options: MongoRetryOptions = {}
+): Promise<Db> {
+  const maxAttempts = Math.max(1, Math.min(5, options.maxAttempts ?? 3));
+  const baseDelayMs = Math.max(50, options.baseDelayMs ?? 250);
+  const dbName = getMongoDbName();
+
+  if (!isMongoConfigured()) {
+    throw new MongoPersistenceError(
+      `Database unavailable: MONGODB_URI is not configured for database "${dbName}".`,
+      503,
+      0
+    );
+  }
+
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const connectedClient = await connectMongoClient();
+      const db = connectedClient.db(dbName);
+      await ensureMongoIndexes(db);
+      return db;
+    } catch (err) {
+      lastError = err;
+      if (isNonRetryableMongoError(err) || attempt === maxAttempts) {
+        break;
+      }
+      globalThis.__bgcMongoClientPromise = undefined;
+      await sleepMs(baseDelayMs * attempt);
+    }
+  }
+
+  throw new MongoPersistenceError(
+    `Database unavailable (${dbName}): ${sanitizeMongoErrorMessage(lastError)}`,
+    503,
+    maxAttempts
+  );
+}
+
+/**
+ * Executes an authoritative MongoDB operation with bounded retries on transient failures.
+ * Never swallows errors or falls back to temporary /tmp storage.
+ */
+export async function withMongoRetry<T>(
+  operation: (db: Db, attempt: number) => Promise<T>,
+  options: MongoRetryOptions = {}
+): Promise<T> {
+  const maxAttempts = Math.max(1, Math.min(5, options.maxAttempts ?? 3));
+  const baseDelayMs = Math.max(50, options.baseDelayMs ?? 250);
+  const dbName = getMongoDbName();
+
+  if (!isMongoConfigured()) {
+    throw new MongoPersistenceError(
+      `Database unavailable: MONGODB_URI is not configured for database "${dbName}".`,
+      503,
+      0
+    );
+  }
+
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const connectedClient = await connectMongoClient();
+      const db = connectedClient.db(dbName);
+      await ensureMongoIndexes(db);
+      return await operation(db, attempt);
+    } catch (err) {
+      lastError = err;
+      if (isNonRetryableMongoError(err) || attempt === maxAttempts) {
+        break;
+      }
+      // If connection topology closed or timed out, reset cached client promise before retrying
+      const msg = sanitizeMongoErrorMessage(err);
+      if (/topology|closed|reset|timeout|network|server selection/i.test(msg)) {
+        globalThis.__bgcMongoClientPromise = undefined;
+      }
+      await sleepMs(baseDelayMs * attempt);
+    }
+  }
+
+  if (lastError instanceof MongoPersistenceError) {
+    throw lastError;
+  }
+
+  throw new MongoPersistenceError(
+    `Database operation failed after ${maxAttempts} attempt(s) on "${dbName}": ${sanitizeMongoErrorMessage(
+      lastError
+    )}`,
+    503,
+    maxAttempts
+  );
+}
+
 /**
  * Returns a cached, reusable MongoDB database instance with all 7 collection indexes initialized.
- * Prevents opening new connections on every API request in both Express and Vercel Serverless.
- * Returns null silently if MONGODB_URI is not configured or temporarily unreachable.
+ * Uses bounded retries before returning null if MONGODB_URI is not configured or unreachable.
  */
 export async function getMongoDatabase(): Promise<Db | null> {
   if (!isMongoConfigured()) {
@@ -161,12 +293,8 @@ export async function getMongoDatabase(): Promise<Db | null> {
   }
 
   try {
-    const connectedClient = await connectMongoClient();
-    const db = connectedClient.db(getMongoDbName());
-    await ensureMongoIndexes(db);
-    return db;
+    return await getAuthoritativeMongoDatabase({ maxAttempts: 2, baseDelayMs: 200 });
   } catch {
-    // Silently fall back to persistent server storage without triggering runtime console error alerts
     return null;
   }
 }
@@ -189,15 +317,13 @@ export async function checkMongoConnectionHealth(): Promise<{
       connected: false,
       databaseName: dbName,
       message:
-        'MONGODB_URI is not yet set in environment variables (or still contains <db_password>). Using local server fallback until configured.',
+        'MONGODB_URI is not yet set in environment variables (or still contains <db_password>).',
     };
   }
 
   try {
-    const connectedClient = await connectMongoClient();
-    const db = connectedClient.db(dbName);
+    const db = await getAuthoritativeMongoDatabase({ maxAttempts: 2, baseDelayMs: 200 });
     await db.command({ ping: 1 });
-    await ensureMongoIndexes(db);
     return {
       configured: true,
       connected: true,
@@ -205,14 +331,12 @@ export async function checkMongoConnectionHealth(): Promise<{
       message: `Successfully connected to MongoDB Atlas database "${dbName}".`,
     };
   } catch (err) {
-    const rawMsg = err instanceof Error ? err.message : String(err);
-    // Sanitize any potential URI substrings from error messages
-    const safeMsg = rawMsg.replace(/mongodb(\+srv)?:\/\/[^\s]+/gi, '[REDACTED_MONGODB_URI]');
+    const safeMsg = sanitizeMongoErrorMessage(err);
     return {
       configured: true,
       connected: false,
       databaseName: dbName,
-      message: `MongoDB Atlas standby (${safeMsg}) — using persistent server storage until database user password matches in Atlas.`,
+      message: `MongoDB Atlas connection error (${safeMsg}).`,
     };
   }
 }

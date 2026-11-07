@@ -1,6 +1,3 @@
-import { doc, getDoc, setDoc } from 'firebase/firestore';
-import { db } from '../firebase';
-
 export type OrderDeliveryStatus =
   | 'received'
   | 'baking'
@@ -227,21 +224,50 @@ export function buildOrderTimeline(order: BrownieOrder): OrderTimelineStep[] {
 }
 
 /**
- * Fetch an order by its ID from Firestore, with graceful local fallback & automatic seeding
+ * Fetch an order by its ID from the authoritative backend API (/api/orders/:orderId), with graceful local fallback
  */
 export async function fetchOrderById(rawId: string): Promise<BrownieOrder | null> {
   const cleanId = rawId.trim().toUpperCase();
   if (!cleanId) return null;
 
-  // 1. Try Firestore
+  // 1. Authoritative MongoDB API lookup
   try {
-    const docRef = doc(db, 'orders', cleanId);
-    const snap = await getDoc(docRef);
-    if (snap.exists()) {
-      return { id: snap.id, ...snap.data() } as BrownieOrder;
+    const res = await fetch(`/api/orders/${encodeURIComponent(cleanId)}`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data?.success && data?.order) {
+        const srv = data.order;
+        return {
+          id: srv.orderId || srv.id,
+          orderId: srv.orderId || srv.id,
+          userId: srv.userId,
+          customerName: srv.customerName,
+          customerEmail: srv.customerEmail || '',
+          customerPhone: srv.customerPhone || '',
+          items: Array.isArray(srv.items)
+            ? srv.items.map((it: any, idx: number) => ({
+                id: it.productId || `item_${idx + 1}`,
+                name: it.name,
+                quantity: it.quantity || 1,
+                price: it.lineTotalFormatted || it.unitPriceFormatted || '₹0',
+              }))
+            : [],
+          totalAmount: srv.totalAmount || '₹0',
+          status: srv.status || 'received',
+          statusMessage:
+            srv.status === 'delivered'
+              ? 'Delivered warm and fresh!'
+              : 'Handcrafted to order in our studio.',
+          estimatedDelivery: srv.status === 'delivered' ? 'Delivered' : 'Scheduled Delivery',
+          deliveryAddress: srv.deliveryAddress || '',
+          createdAt: srv.createdAt || new Date().toISOString(),
+          updatedAt: srv.updatedAt || srv.createdAt || new Date().toISOString(),
+          specialInstructions: srv.specialInstructions || undefined,
+        };
+      }
     }
-  } catch (err) {
-    console.warn('Firestore order lookup warning, checking fallback:', err);
+  } catch {
+    // Fall through to local cache
   }
 
   // 2. Try LocalStorage
@@ -264,12 +290,6 @@ export async function fetchOrderById(rawId: string): Promise<BrownieOrder | null
   );
 
   if (sample) {
-    // Optionally seed it into Firestore so future lookups find it there
-    try {
-      await setDoc(doc(db, 'orders', sample.id), sample, { merge: true });
-    } catch {
-      // Ignored if permissions are restricted
-    }
     return sample;
   }
 

@@ -1,17 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { User, onAuthStateChanged } from 'firebase/auth';
-import {
-  doc,
-  getDoc,
-  setDoc,
-  collection,
-  query,
-  where,
-  onSnapshot,
-  addDoc,
-  serverTimestamp,
-} from 'firebase/firestore';
-import { auth, db, googleProvider, signInWithPopup, signOut, handleFirestoreError, OperationType } from '../firebase';
+import { auth, googleProvider, signInWithPopup, signOut } from '../firebase';
 
 export interface UserProfile {
   uid: string;
@@ -99,15 +88,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [userRegistrations, setUserRegistrations] = useState<ClassRegistration[]>([]);
   const [userInquiries, setUserInquiries] = useState<Inquiry[]>([]);
 
-  // Listen to Auth State (Preserving existing Firebase Authentication & Firestore sync + MongoDB users sync)
+  // Listen to Firebase Auth State (Preserving Firebase Authentication & Google Sign-In + syncing profile to MongoDB)
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
       if (currentUser) {
         const emailLower = (currentUser.email || '').toLowerCase().trim();
-        let isAuthorizedAdmin = ['vigneshsivan2001@gmail.com', 'preethipreethu712@gmail.com'].includes(emailLower);
+        const isAuthorizedAdmin = ['vigneshsivan2001@gmail.com', 'preethipreethu712@gmail.com'].includes(emailLower);
 
-        let resolvedProfile: UserProfile = {
+        const resolvedProfile: UserProfile = {
           uid: currentUser.uid,
           displayName: currentUser.displayName || 'Baking Enthusiast',
           email: currentUser.email || '',
@@ -117,45 +106,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           favorites: ['classic-fudge', 'salted-caramel'],
         };
 
-        // 1. Sync user profile in Firestore (existing logic preserved)
-        const userDocRef = doc(db, 'users', currentUser.uid);
-        try {
-          if (!isAuthorizedAdmin && emailLower) {
-            try {
-              const adminSnap = await getDoc(doc(db, 'settings', 'admins'));
-              if (adminSnap.exists()) {
-                const adminData = adminSnap.data();
-                const emails: string[] = Array.isArray(adminData?.adminEmails)
-                  ? adminData.adminEmails.map((e: string) => e.toLowerCase())
-                  : [];
-                if (emails.includes(emailLower)) {
-                  isAuthorizedAdmin = true;
-                  resolvedProfile.role = 'admin';
-                }
-              }
-            } catch {}
-          }
-
-          const docSnap = await getDoc(userDocRef);
-          if (docSnap.exists()) {
-            const existingProfile = docSnap.data() as UserProfile;
-            if (isAuthorizedAdmin && existingProfile.role !== 'admin') {
-              const upgradedProfile: UserProfile = { ...existingProfile, role: 'admin' };
-              await setDoc(userDocRef, { role: 'admin' }, { merge: true });
-              resolvedProfile = upgradedProfile;
-            } else {
-              resolvedProfile = existingProfile;
-            }
-          } else {
-            await setDoc(userDocRef, resolvedProfile);
-          }
-        } catch (error) {
-          console.warn('Could not fetch Firestore user profile, using server sync:', error);
-        }
-
         setUserProfile(resolvedProfile);
 
-        // 2. Also sync user profile to MongoDB `users` collection via /api/users/sync
+        // Sync user profile to authoritative MongoDB `users` collection via /api/users/sync
         try {
           const syncRes = await fetch('/api/users/sync', {
             method: 'POST',
@@ -180,7 +133,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return () => unsubscribe();
   }, []);
 
-  // Listen to user registrations when user is logged in
+  // Load user registrations from authoritative MongoDB API when user is logged in
   useEffect(() => {
     if (!user) {
       setUserRegistrations([]);
@@ -197,36 +150,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       })
       .catch(() => {});
 
-    const regColPath = 'class_registrations';
-    const q = query(collection(db, regColPath), where('userId', '==', user.uid));
-    const unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
-        const regs: ClassRegistration[] = [];
-        snapshot.forEach((d) => {
-          regs.push({ id: d.id, ...d.data() } as ClassRegistration);
-        });
-        if (regs.length > 0) {
-          setUserRegistrations((prev) => {
-            const byId = new Map<string, ClassRegistration>();
-            for (const p of prev) if (p.id) byId.set(p.id, p);
-            for (const r of regs) if (r.id) byId.set(r.id, r);
-            return Array.from(byId.values());
-          });
-        }
-      },
-      (error) => {
-        console.warn('Registrations listener fallback:', error);
-      }
-    );
-
     return () => {
       cancelled = true;
-      unsubscribe();
     };
   }, [user]);
 
-  // Listen to user inquiries when user is logged in, or load from localStorage if guest
+  // Load user inquiries from authoritative MongoDB API when logged in, or from localStorage if guest
   useEffect(() => {
     if (!user) {
       try {
@@ -252,32 +181,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       })
       .catch(() => {});
 
-    const inqColPath = 'inquiries';
-    const q = query(collection(db, inqColPath), where('userId', '==', user.uid));
-    const unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
-        const inqs: Inquiry[] = [];
-        snapshot.forEach((d) => {
-          inqs.push({ id: d.id, ...d.data() } as Inquiry);
-        });
-        if (inqs.length > 0) {
-          setUserInquiries((prev) => {
-            const byId = new Map<string, Inquiry>();
-            for (const p of prev) if (p.id) byId.set(p.id, p);
-            for (const i of inqs) if (i.id) byId.set(i.id, i);
-            return Array.from(byId.values());
-          });
-        }
-      },
-      (error) => {
-        console.warn('Inquiries listener fallback:', error);
-      }
-    );
-
     return () => {
       cancelled = true;
-      unsubscribe();
     };
   }, [user]);
 
@@ -349,12 +254,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       data.registration,
       ...prev.filter((r) => r.id !== data.registration.id),
     ]);
-
-    try {
-      await setDoc(doc(db, 'class_registrations', data.registration.id), data.registration);
-    } catch {
-      // Already saved in MongoDB & server database
-    }
   };
 
   const submitInquiry = async (
@@ -394,12 +293,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const savedInq = data.inquiry;
 
     try {
-      await setDoc(doc(db, 'inquiries', savedInq.id), savedInq);
-    } catch {
-      // Already saved in MongoDB & server database
-    }
-
-    try {
       const stored = localStorage.getItem('browinegirl_customer_inquiries');
       const list = stored ? JSON.parse(stored) : [];
       const deduped = [savedInq, ...list.filter((item: any) => item?.id !== savedInq.id)];
@@ -417,19 +310,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     setUserProfile({ ...userProfile, favorites: updatedFavs });
 
-    // Sync to MongoDB `users` collection
+    // Sync to authoritative MongoDB `users` collection
     fetch(`/api/users/${encodeURIComponent(user.uid)}/favorites`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ favorites: updatedFavs }),
     }).catch(() => {});
-
-    const userDocPath = `users/${user.uid}`;
-    try {
-      await setDoc(doc(db, 'users', user.uid), { favorites: updatedFavs }, { merge: true });
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, userDocPath);
-    }
   };
 
   return (

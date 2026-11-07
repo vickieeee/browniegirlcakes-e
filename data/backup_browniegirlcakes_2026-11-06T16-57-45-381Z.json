@@ -1,0 +1,264 @@
+{
+  "backupMetadata": {
+    "databaseName": "browniegirlcakes",
+    "projectEnvironment": "Project B - Brownie Girl Cakes (Vercel Live Production)",
+    "createdAt": "2026-11-06T16:57:45.381Z",
+    "readOnlyExport": true,
+    "collectionsExported": [
+      "products",
+      "categories",
+      "website_settings",
+      "users",
+      "orders",
+      "bookings",
+      "class_registrations"
+    ]
+  },
+  "collections": {
+    "products": [],
+    "categories": [],
+    "website_settings": [
+      {
+        "_id": "6aedc454fdbbf204543a43b1",
+        "settingKey": "counters",
+        "lastOrderSequence": 1030,
+        "updatedAt": "2026-11-06T15:34:55.263Z"
+      }
+    ],
+    "users": [
+      {
+        "_id": "6aedbbb332ac3978569f3843",
+        "uid": "ywZm6gJdPEesJAcrAVy3QmaN7XF2",
+        "email": "vigneshsivan2001@gmail.com",
+        "displayName": "Vignesh -_-045",
+        "photoURL": "https://lh3.googleusercontent.com/a/ACg8ocJ_BEwl2TLcYMyZhN3Rd_uzBv5m4yKIePXgqOmgb-u1ddStqLO3=s96-c",
+        "role": "admin",
+        "favorites": [],
+        "createdAt": "2026-10-20T14:21:51.946Z",
+        "updatedAt": "2026-11-06T15:44:07.022Z"
+      }
+    ],
+    "orders": [
+      {
+        "_id": "6aedc9ce7702a583e3ce072f",
+        "id": "BGC1029",
+        "orderId": "BGC1029",
+        "idempotencyKey": "idem_1793968569455_femgnje",
+        "userId": "ywZm6gJdPEesJAcrAVy3QmaN7XF2",
+        "customerName": "Vignesh",
+        "customerEmail": "vigneshsivan2001@gmail.com",
+        "customerPhone": "789456123",
+        "deliveryAddress": "16 Rayappaswamy Dever Street Kamachipuram Ondipudure",
+        "specialInstructions": "",
+        "items": [
+          {
+            "productId": "cake-chocolate-mousse",
+            "name": "Chocolate Mousse Cake (½ KG)",
+            "category": "cake_normal",
+            "quantity": 1,
+            "unitPrice": 550,
+            "unitPriceFormatted": "₹550",
+            "lineTotal": 550,
+            "lineTotalFormatted": "₹550",
+            "variantLabel": "½ KG",
+            "weight": "½ KG",
+            "isAddon": false
+          },
+          {
+            "productId": "cake-choco-vanilla",
+            "name": "Choco Vanilla Cake (½ KG)",
+            "category": "cake_normal",
+            "quantity": 1,
+            "unitPrice": 500,
+            "unitPriceFormatted": "₹500",
+            "lineTotal": 500,
+            "lineTotalFormatted": "₹500",
+            "variantLabel": "½ KG",
+            "weight": "½ KG",
+            "isAddon": false
+          },
+          {
+            "productId": "cake-classic-vanilla",
+            "name": "Classic Vanilla Cake (½ KG)",
+            "category": "cake_normal",
+            "quantity": 1,
+            "unitPrice": 450,
+            "unitPriceFormatted": "₹450",
+            "lineTotal": 450,
+            "lineTotalFormatted": "₹450",
+            "variantLabel": "½ KG",
+            "weight": "½ KG",
+            "isAddon": false
+          }
+        ],
+        "totalAmount": "₹1,500",
+        "totalAmountNumeric": 1500,
+        "hasFrostedAddon": false,
+        "paymentStatus": "pending",
+        "status": "delivered",
+        "isRead": false,
+        "createdAt": "2026-11-06T12:36:30.761Z",
+        "updatedAt": "2026-11-06T15:36:21.281Z"
+      },
+      {
+        "_id": "6aedf39f3cba0a9056d50829",
+        "id": "BGC1030",
+        "orderId": "BGC1030",
+        "idempotencyKey": "idem_1793979264397_0opyy01",
+        "userId": "ywZm6gJdPEesJAcrAVy3QmaN7XF2",
+        "customerName": "Vignesh",
+        "customerEmail": "vigneshsivan2001@gmail.com",
+        "customerPhone": "7010862060",
+        "deliveryAddress": "16 Rayappaswamy Dever Street Kamachipuram Ondipudure",
+        "specialInstructions": "",
+        "items": [
+          {
+            "productId": "cake-choco-vanilla",
+            "name": "Choco Vanilla Cake (½ KG)",
+            "category": "cake_normal",
+            "quantity": 1,
+            "unitPrice": 500,
+            "unitPriceFormatted": "₹500",
+            "lineTotal": 500,
+            "lineTotalFormatted": "₹500",
+            "variantLabel": "½ KG",
+            "weight": "½ KG",
+            "isAddon": false
+          },
+          {
+            "productId": "cake-blueberry",
+            "name": "Blueberry Cake (½ KG)",
+            "category": "cake_normal",
+            "quantity": 1,
+            "unitPrice": 500,
+            "unitPriceFormatted": "₹500",
+            "lineTotal": 500,
+            "lineTotalFormatted": "₹500",
+            "variantLabel": "½ KG",
+            "weight": "½ KG",
+            "isAddon": false
+          },
+          {
+            "productId": "cake-butterscotch",
+            "name": "Butterscotch Cake (½ KG)",
+            "category": "cake_normal",
+            "quantity": 1,
+            "unitPrice": 500,
+            "unitPriceFormatted": "₹500",
+            "lineTotal": 500,
+            "lineTotalFormatted": "₹500",
+            "variantLabel": "½ KG",
+            "weight": "½ KG",
+            "isAddon": false
+          },
+          {
+            "productId": "cake-choco-tiramisu",
+            "name": "Choco Tiramisu (Coffee Flavour) (½ KG)",
+            "category": "cake_premium",
+            "quantity": 1,
+            "unitPrice": 700,
+            "unitPriceFormatted": "₹700",
+            "lineTotal": 700,
+            "lineTotalFormatted": "₹700",
+            "variantLabel": "½ KG",
+            "weight": "½ KG",
+            "isAddon": false
+          },
+          {
+            "productId": "cake-rose-milk",
+            "name": "Rose Milk Cake (½ KG)",
+            "category": "cake_premium",
+            "quantity": 1,
+            "unitPrice": 650,
+            "unitPriceFormatted": "₹650",
+            "lineTotal": 650,
+            "lineTotalFormatted": "₹650",
+            "variantLabel": "½ KG",
+            "weight": "½ KG",
+            "isAddon": false
+          },
+          {
+            "productId": "cake-dark-choco-strawberry-compound",
+            "name": "Dark Choco with Strawberry Compound (½ KG)",
+            "category": "cake_premium",
+            "quantity": 1,
+            "unitPrice": 750,
+            "unitPriceFormatted": "₹750",
+            "lineTotal": 750,
+            "lineTotalFormatted": "₹750",
+            "variantLabel": "½ KG",
+            "weight": "½ KG",
+            "isAddon": false
+          }
+        ],
+        "totalAmount": "₹3,600",
+        "totalAmountNumeric": 3600,
+        "hasFrostedAddon": false,
+        "paymentStatus": "pending",
+        "status": "delivered",
+        "isRead": false,
+        "createdAt": "2026-11-06T15:34:55.640Z",
+        "updatedAt": "2026-11-06T15:36:25.684Z"
+      }
+    ],
+    "bookings": [
+      {
+        "_id": "6aedc9cffdbbf204543a43eb",
+        "id": "order_BGC1029",
+        "bookingId": "order_BGC1029",
+        "createdAt": "2026-11-06T12:36:30.761Z",
+        "deliveryAddress": "16 Rayappaswamy Dever Street Kamachipuram Ondipudure",
+        "deliveryType": "delivery",
+        "isRead": true,
+        "message": "Order ID: BGC1029\nCustomer: Vignesh\nPhone: 789456123\nDelivery / Pickup: 16 Rayappaswamy Dever Street Kamachipuram Ondipudure\n\nProducts:\n• Chocolate Mousse Cake (½ KG) [Cake Menu - Normal Flavours] – 1 × ₹550 = ₹550\n• Choco Vanilla Cake (½ KG) [Cake Menu - Normal Flavours] – 1 × ₹500 = ₹500\n• Classic Vanilla Cake (½ KG) [Cake Menu - Normal Flavours] – 1 × ₹450 = ₹450\n\nGrand Total: ₹1,500",
+        "orderId": "BGC1029",
+        "status": "read",
+        "subject": "Order ID: BGC1029 (3 Products — Grand Total: ₹1,500)",
+        "updatedAt": "2026-11-06T15:37:47.661Z",
+        "userEmail": "vigneshsivan2001@gmail.com",
+        "userId": "ywZm6gJdPEesJAcrAVy3QmaN7XF2",
+        "userName": "Vignesh",
+        "userPhone": "789456123",
+        "readAt": "2026-11-06T15:37:46.898Z"
+      },
+      {
+        "_id": "6aedf39ffdbbf204543a455e",
+        "id": "order_BGC1030",
+        "bookingId": "order_BGC1030",
+        "createdAt": "2026-11-06T15:34:55.640Z",
+        "deliveryAddress": "16 Rayappaswamy Dever Street Kamachipuram Ondipudure",
+        "deliveryType": "delivery",
+        "isRead": true,
+        "message": "Order ID: BGC1030\nCustomer: Vignesh\nPhone: 7010862060\nDelivery / Pickup: 16 Rayappaswamy Dever Street Kamachipuram Ondipudure\n\nProducts:\n• Choco Vanilla Cake (½ KG) [Cake Menu - Normal Flavours] – 1 × ₹500 = ₹500\n• Blueberry Cake (½ KG) [Cake Menu - Normal Flavours] – 1 × ₹500 = ₹500\n• Butterscotch Cake (½ KG) [Cake Menu - Normal Flavours] – 1 × ₹500 = ₹500\n• Choco Tiramisu (Coffee Flavour) (½ KG) [Cake Menu - Premium Flavours] – 1 × ₹700 = ₹700\n• Rose Milk Cake (½ KG) [Cake Menu - Premium Flavours] – 1 × ₹650 = ₹650\n• Dark Choco with Strawberry Compound (½ KG) [Cake Menu - Premium Flavours] – 1 × ₹750 = ₹750\n\nGrand Total: ₹3,600",
+        "orderId": "BGC1030",
+        "status": "read",
+        "subject": "Order ID: BGC1030 (6 Products — Grand Total: ₹3,600)",
+        "updatedAt": "2026-11-06T15:37:51.884Z",
+        "userEmail": "vigneshsivan2001@gmail.com",
+        "userId": "ywZm6gJdPEesJAcrAVy3QmaN7XF2",
+        "userName": "Vignesh",
+        "userPhone": "7010862060",
+        "readAt": "2026-11-06T15:37:51.105Z"
+      }
+    ],
+    "class_registrations": [
+      {
+        "_id": "6aedcb1ffdbbf204543a43f4",
+        "id": "REG-1793968927849-JMBQR",
+        "classId": "class-1793520453726",
+        "className": "Master  offline classes",
+        "createdAt": "2026-11-06T12:42:07.849Z",
+        "idempotencyKey": "class_reg_1793968918402_kob311",
+        "notes": "",
+        "preferredDate": "10:30 AM to 3.00 PM (offline)",
+        "registrationId": "REG-1793968927849-JMBQR",
+        "status": "registered",
+        "updatedAt": "2026-11-06T12:42:07.849Z",
+        "userEmail": "vigneshsivan2001@gmail.com",
+        "userId": "ywZm6gJdPEesJAcrAVy3QmaN7XF2",
+        "userName": "Vignesh -_-045",
+        "userPhone": ""
+      }
+    ]
+  }
+}

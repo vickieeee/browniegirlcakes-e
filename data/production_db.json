@@ -1338,10 +1338,17 @@
       "settingKey": "achievements"
     }
   },
-  "deletedOrderIds": [],
-  "deletedInquiryIds": [],
-  "deletedRegistrationIds": [],
+  "deletedOrderIds": [
+    "BGC1084"
+  ],
+  "deletedInquiryIds": [
+    "order_BGC1084",
+    "BK-1794026216796-LN33B"
+  ],
+  "deletedRegistrationIds": [
+    "TEST_QA_REG_1794026217061"
+  ],
   "deletedProductIds": [],
   "deletedClassIds": [],
-  "updatedAt": "2026-11-06T10:16:56.281Z"
+  "updatedAt": "2026-11-07T04:36:57.644Z"
 }

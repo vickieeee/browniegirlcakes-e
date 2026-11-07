@@ -1,0 +1,404 @@
+{
+  "executedAt": "2026-11-06T17:06:51.846Z",
+  "targetDatabase": "browniegirlcakes",
+  "sourceReference": "/data/backup_browniegirl_pre_phase9.json",
+  "insertedProducts": [
+    {
+      "id": "cake-classic-vanilla",
+      "name": "Classic Vanilla Cake",
+      "category": "cake_normal",
+      "upsertedId": "6aee092bfdbbf204543a4635"
+    },
+    {
+      "id": "cake-choco-vanilla",
+      "name": "Choco Vanilla Cake",
+      "category": "cake_normal",
+      "upsertedId": "6aee092bfdbbf204543a4636"
+    },
+    {
+      "id": "cake-chocolate-mousse",
+      "name": "Chocolate Mousse Cake",
+      "category": "cake_normal",
+      "upsertedId": "6aee092cfdbbf204543a4637"
+    },
+    {
+      "id": "cake-black-forest",
+      "name": "Black Forest Cake",
+      "category": "cake_normal",
+      "upsertedId": "6aee092cfdbbf204543a4638"
+    },
+    {
+      "id": "cake-white-forest",
+      "name": "White Forest Cake",
+      "category": "cake_normal",
+      "upsertedId": "6aee092cfdbbf204543a4639"
+    },
+    {
+      "id": "cake-blueberry",
+      "name": "Blueberry Cake",
+      "category": "cake_normal",
+      "upsertedId": "6aee092cfdbbf204543a463a"
+    },
+    {
+      "id": "cake-blackcurrant",
+      "name": "Blackcurrant Cake",
+      "category": "cake_normal",
+      "upsertedId": "6aee092cfdbbf204543a463b"
+    },
+    {
+      "id": "cake-strawberry",
+      "name": "Strawberry Cake",
+      "category": "cake_normal",
+      "upsertedId": "6aee092cfdbbf204543a463c"
+    },
+    {
+      "id": "cake-mango",
+      "name": "Mango Cake",
+      "category": "cake_normal",
+      "upsertedId": "6aee092cfdbbf204543a463d"
+    },
+    {
+      "id": "cake-butterscotch",
+      "name": "Butterscotch Cake",
+      "category": "cake_normal",
+      "upsertedId": "6aee092cfdbbf204543a463e"
+    },
+    {
+      "id": "cake-palkova",
+      "name": "Palkova Cake",
+      "category": "cake_normal",
+      "upsertedId": "6aee092cfdbbf204543a463f"
+    },
+    {
+      "id": "cake-rich-caramel",
+      "name": "Rich Caramel Cake",
+      "category": "cake_normal",
+      "upsertedId": "6aee092cfdbbf204543a4640"
+    },
+    {
+      "id": "cake-lotus-biscoff",
+      "name": "Lotus Biscoff Cake",
+      "category": "cake_premium",
+      "upsertedId": "6aee092cfdbbf204543a4641"
+    },
+    {
+      "id": "cake-choco-tiramisu",
+      "name": "Choco Tiramisu (Coffee Flavour)",
+      "category": "cake_premium",
+      "upsertedId": "6aee092cfdbbf204543a4642"
+    },
+    {
+      "id": "cake-choco-truffle",
+      "name": "Choco Truffle",
+      "category": "cake_premium",
+      "upsertedId": "6aee092cfdbbf204543a4643"
+    },
+    {
+      "id": "cake-rasmalai",
+      "name": "Rasmalai Cake",
+      "category": "cake_premium",
+      "upsertedId": "6aee092cfdbbf204543a4644"
+    },
+    {
+      "id": "cake-gulab-jamun",
+      "name": "Gulab Jamun Cake",
+      "category": "cake_premium",
+      "upsertedId": "6aee092cfdbbf204543a4645"
+    },
+    {
+      "id": "cake-rose-milk",
+      "name": "Rose Milk Cake",
+      "category": "cake_premium",
+      "upsertedId": "6aee092dfdbbf204543a4646"
+    },
+    {
+      "id": "cake-london-viral-caramel",
+      "name": "London Viral Caramel Cake",
+      "category": "cake_premium",
+      "upsertedId": "6aee092dfdbbf204543a4647"
+    },
+    {
+      "id": "cake-choco-nutella",
+      "name": "Choco Nutella Cake",
+      "category": "cake_premium",
+      "upsertedId": "6aee092dfdbbf204543a4648"
+    },
+    {
+      "id": "cake-ferrero-rocher-overloaded",
+      "name": "Ferrero Rocher Overloaded",
+      "category": "cake_premium",
+      "upsertedId": "6aee092dfdbbf204543a4649"
+    },
+    {
+      "id": "cake-dark-choco-strawberry-compound",
+      "name": "Dark Choco with Strawberry Compound",
+      "category": "cake_premium",
+      "upsertedId": "6aee092dfdbbf204543a464a"
+    },
+    {
+      "id": "cake-choco-kunafa-pistachio",
+      "name": "Choco Kunafa Pistachio",
+      "category": "cake_premium",
+      "upsertedId": "6aee092dfdbbf204543a464b"
+    },
+    {
+      "id": "brownie-classic-fudge",
+      "name": "KitKat Brownie",
+      "category": "brownie",
+      "upsertedId": "6aee092dfdbbf204543a464c"
+    },
+    {
+      "id": "brownie-triple-chocolate",
+      "name": "Triple Chocolate Brownie",
+      "category": "brownie",
+      "upsertedId": "6aee092dfdbbf204543a464d"
+    },
+    {
+      "id": "brownie-nutella-swirl",
+      "name": "Nutella Brownie",
+      "category": "brownie",
+      "upsertedId": "6aee092dfdbbf204543a464e"
+    },
+    {
+      "id": "brownie-walnut-crunch",
+      "name": "Walnut Brownie",
+      "category": "brownie",
+      "upsertedId": "6aee092dfdbbf204543a464f"
+    },
+    {
+      "id": "brownie-salted-caramel",
+      "name": "Double Chocolate Brownie",
+      "category": "brownie",
+      "upsertedId": "6aee092dfdbbf204543a4650"
+    },
+    {
+      "id": "brownie-lotus-biscoff",
+      "name": "Lotus Biscoff Brownie",
+      "category": "brownie",
+      "upsertedId": "6aee092dfdbbf204543a4651"
+    },
+    {
+      "id": "brownie-oreo-fudge",
+      "name": "Oreo Cookies & Cream Brownie",
+      "category": "brownie",
+      "upsertedId": "6aee092dfdbbf204543a4652"
+    },
+    {
+      "id": "brownie-red-velvet",
+      "name": "Red Velvet Cream Cheese Brownie",
+      "category": "brownie",
+      "upsertedId": "6aee092dfdbbf204543a4653"
+    },
+    {
+      "id": "brownie-almond-praline",
+      "name": "Roasted Almond Fudge Brownie",
+      "category": "brownie",
+      "upsertedId": "6aee092dfdbbf204543a4654"
+    },
+    {
+      "id": "assorted-box-6",
+      "name": "Assorted Brownie Box (Box of 6)",
+      "category": "assorted_box",
+      "upsertedId": "6aee092efdbbf204543a4655"
+    },
+    {
+      "id": "assorted-box-12",
+      "name": "Grand Assorted Brownie Box (Box of 12)",
+      "category": "assorted_box",
+      "upsertedId": "6aee092efdbbf204543a4656"
+    },
+    {
+      "id": "frosted-belgian-ganache",
+      "name": "Chocolate Frosted Brownie",
+      "category": "frosted_brownie",
+      "upsertedId": "6aee092efdbbf204543a4657"
+    },
+    {
+      "id": "frosted-ferrero-rocher",
+      "name": "Ferrero Rocher Frosted Brownie",
+      "category": "frosted_brownie",
+      "upsertedId": "6aee092efdbbf204543a4658"
+    },
+    {
+      "id": "frosted-lotus-biscoff",
+      "name": "Lotus Biscoff Cream Frosted Brownie",
+      "category": "frosted_brownie",
+      "upsertedId": "6aee092efdbbf204543a4659"
+    },
+    {
+      "id": "frosted-cream-cheese",
+      "name": "Velvet Cream Cheese Frosted Brownie",
+      "category": "frosted_brownie",
+      "upsertedId": "6aee092efdbbf204543a465a"
+    },
+    {
+      "id": "frosted-salted-caramel",
+      "name": "Salted Caramel Buttercream Frosted Brownie",
+      "category": "frosted_brownie",
+      "upsertedId": "6aee092efdbbf204543a465b"
+    },
+    {
+      "id": "frosted-pistachio-kunafa",
+      "name": "Dubai Pistachio Kunafa Frosted Brownie",
+      "category": "frosted_brownie",
+      "upsertedId": "6aee092efdbbf204543a465c"
+    },
+    {
+      "id": "bento-chocolate-truffle",
+      "name": "Chocolate Truffle",
+      "category": "bento_cake",
+      "upsertedId": "6aee092efdbbf204543a465d"
+    },
+    {
+      "id": "bento-gulab-jamun",
+      "name": "Gulab Jamun Cake",
+      "category": "bento_cake",
+      "upsertedId": "6aee092efdbbf204543a465e"
+    },
+    {
+      "id": "bento-classic-butterscotch",
+      "name": "Classic Butterscotch",
+      "category": "bento_cake",
+      "upsertedId": "6aee092efdbbf204543a465f"
+    },
+    {
+      "id": "bento-rose-rasagulla",
+      "name": "Rose Rasagulla Cake",
+      "category": "bento_cake",
+      "upsertedId": "6aee092efdbbf204543a4660"
+    },
+    {
+      "id": "bento-red-velvet",
+      "name": "Red Velvet Cream Cheese Cake",
+      "category": "bento_cake",
+      "upsertedId": "6aee092efdbbf204543a4661"
+    },
+    {
+      "id": "bento-rasmalai-pistachio",
+      "name": "Royal Rasmalai Cake",
+      "category": "bento_cake",
+      "upsertedId": "6aee092efdbbf204543a4662"
+    },
+    {
+      "id": "bento-belgian-nutella",
+      "name": "Nutella Ferrero Cake",
+      "category": "bento_cake",
+      "upsertedId": "6aee092efdbbf204543a4663"
+    },
+    {
+      "id": "bento-lotus-biscoff-cake",
+      "name": "Lotus Biscoff Cheesecake Cake",
+      "category": "bento_cake",
+      "upsertedId": "6aee092ffdbbf204543a4664"
+    },
+    {
+      "id": "bento-blueberry-compote",
+      "name": "Wild Blueberry Cream Cake",
+      "category": "bento_cake",
+      "upsertedId": "6aee092ffdbbf204543a4665"
+    },
+    {
+      "id": "bento-strawberry-shortcake",
+      "name": "Fresh Strawberry Cream Cake",
+      "category": "bento_cake",
+      "upsertedId": "6aee092ffdbbf204543a4666"
+    },
+    {
+      "id": "bento-black-forest",
+      "name": "Artisan Black Forest Cake",
+      "category": "bento_cake",
+      "upsertedId": "6aee092ffdbbf204543a4667"
+    },
+    {
+      "id": "bento-white-forest",
+      "name": "Belgian White Forest Cake",
+      "category": "bento_cake",
+      "upsertedId": "6aee092ffdbbf204543a4668"
+    },
+    {
+      "id": "bento-pineapple-delight",
+      "name": "Tropical Pineapple Cream Cake",
+      "category": "bento_cake",
+      "upsertedId": "6aee092ffdbbf204543a4669"
+    },
+    {
+      "id": "bento-mocha-espresso",
+      "name": "Salted Caramel Mocha Cake",
+      "category": "bento_cake",
+      "upsertedId": "6aee092ffdbbf204543a466a"
+    }
+  ],
+  "skippedExistingProducts": [],
+  "insertedCategories": [
+    {
+      "id": "category-cake_normal",
+      "type": "menu_category",
+      "title": "Cake Menu — Normal Flavours",
+      "upsertedId": "6aee092ffdbbf204543a466b"
+    },
+    {
+      "id": "category-cake_premium",
+      "type": "menu_category",
+      "title": "Cake Menu — Premium Flavours",
+      "upsertedId": "6aee092ffdbbf204543a466c"
+    },
+    {
+      "id": "category-brownie",
+      "type": "menu_category",
+      "title": "Brownie",
+      "upsertedId": "6aee092ffdbbf204543a466d"
+    },
+    {
+      "id": "category-assorted_box",
+      "type": "menu_category",
+      "title": "Assorted Brownie Boxes",
+      "upsertedId": "6aee092ffdbbf204543a466e"
+    },
+    {
+      "id": "category-frosted_brownie",
+      "type": "menu_category",
+      "title": "Frosted Brownies",
+      "upsertedId": "6aee092ffdbbf204543a466f"
+    },
+    {
+      "id": "category-bento_cake",
+      "type": "menu_category",
+      "title": "Bento Cakes",
+      "upsertedId": "6aee092ffdbbf204543a4670"
+    },
+    {
+      "id": "brownie-mastery",
+      "type": "baking_class",
+      "title": "The Ultimate Fudgy Brownie Masterclass",
+      "upsertedId": "6aee092ffdbbf204543a4671"
+    },
+    {
+      "id": "artisan-caramels-swirls",
+      "type": "baking_class",
+      "title": "Artisan Caramels & Gourmet Swirled Brownies",
+      "upsertedId": "6aee092ffdbbf204543a4672"
+    },
+    {
+      "id": "teen-baking-camp",
+      "type": "baking_class",
+      "title": "Weekend Cocoa Explorer Baking Lab",
+      "upsertedId": "6aee0930fdbbf204543a4673"
+    }
+  ],
+  "skippedExistingCategories": [],
+  "insertedWebsiteSettings": [
+    {
+      "settingKey": "admins",
+      "upsertedId": "6aee0930fdbbf204543a4674"
+    },
+    {
+      "settingKey": "general",
+      "upsertedId": "6aee0930fdbbf204543a4675"
+    },
+    {
+      "settingKey": "achievements",
+      "upsertedId": "6aee0930fdbbf204543a4676"
+    }
+  ],
+  "skippedExistingWebsiteSettings": []
+}

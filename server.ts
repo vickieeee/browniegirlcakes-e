@@ -2,7 +2,13 @@ import express, { Request, Response } from 'express';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { checkMongoConnectionHealth, getMongoDatabase, MONGO_COLLECTIONS } from './src/lib/mongodb';
+import {
+  checkMongoConnectionHealth,
+  getMongoDatabase,
+  MONGO_COLLECTIONS,
+  MongoPersistenceError,
+  withMongoRetry,
+} from './src/lib/mongodb';
 import {
   getNextMongoOrderSequence,
   MongoBookingDoc,
@@ -87,7 +93,7 @@ export interface PersistedOrderRecord {
   totalAmount: string;
   totalAmountNumeric: number;
   hasFrostedAddon?: boolean;
-  paymentStatus?: 'pending' | 'paid' | 'cod';
+  paymentStatus?: 'pending' | 'paid' | 'failed' | 'refunded' | 'cod';
   status: 'received' | 'baking' | 'finishing' | 'out_for_delivery' | 'delivered' | 'cancelled';
   isRead?: boolean;
   createdAt: string;
@@ -324,46 +330,87 @@ export function createExpressApiApp(): express.Express {
   // API ROUTES — HEALTH, USERS, ORDERS, BOOKINGS/INQUIRIES & CLASS REGISTRATIONS
   // ============================================================================
 
-  // Health & Database Diagnostics
-  app.get('/api/health', async (_req: Request, res: Response) => {
-    const dbState = ensureDatabaseInitialized();
+  // Health & Database Diagnostics — Authoritative Live MongoDB Collection Counts
+  app.get('/api/health', async (req: Request, res: Response) => {
     const mongoHealth = await checkMongoConnectionHealth();
-    let mongoCounts: { orders: number; bookings: number; registrations: number } | null = null;
 
-    if (mongoHealth.connected) {
-      try {
-        const mongoDb = await getMongoDatabase();
-        if (mongoDb) {
-          const [ordersCount, bookingsCount, regsCount] = await Promise.all([
+    if (req.query.__simulateDbFailure === 'true' || !mongoHealth.connected) {
+      res.status(503).json({
+        status: 'error',
+        database: 'disconnected',
+        databaseName: mongoHealth.databaseName,
+        connected: false,
+        storageEngine: 'mongodb-atlas',
+        mongodb: mongoHealth,
+        countsStatus: 'unavailable',
+        error:
+          req.query.__simulateDbFailure === 'true'
+            ? 'Simulated database health check failure.'
+            : mongoHealth.message || `Unable to connect to MongoDB database "${mongoHealth.databaseName}".`,
+      });
+      return;
+    }
+
+    try {
+      const liveCounts = await withMongoRetry(
+        async (mongoDb) => {
+          const [
+            ordersCount,
+            productsCount,
+            categoriesCount,
+            bookingsCount,
+            registrationsCount,
+          ] = await Promise.all([
             mongoDb.collection(MONGO_COLLECTIONS.ORDERS).countDocuments(),
+            mongoDb.collection(MONGO_COLLECTIONS.PRODUCTS).countDocuments(),
+            mongoDb.collection(MONGO_COLLECTIONS.CATEGORIES).countDocuments(),
             mongoDb.collection(MONGO_COLLECTIONS.BOOKINGS).countDocuments(),
             mongoDb.collection(MONGO_COLLECTIONS.CLASS_REGISTRATIONS).countDocuments(),
           ]);
-          mongoCounts = {
-            orders: ordersCount,
-            bookings: bookingsCount,
-            registrations: regsCount,
-          };
-        }
-      } catch {
-        // Fallback to local counts
-      }
-    }
 
-    res.status(200).json({
-      status: 'ok',
-      database: mongoHealth.connected ? 'mongodb-atlas-connected' : 'connected',
-      storageEngine: mongoHealth.connected ? 'mongodb-atlas+server-db' : 'persistent-server-db',
-      mongodb: mongoHealth,
-      firestoreProjectId: firebaseConfig.projectId,
-      firestoreDatabaseId: firebaseConfig.firestoreDatabaseId,
-      counts: {
-        orders: mongoCounts ? Math.max(mongoCounts.orders, dbState.orders.length) : dbState.orders.length,
-        inquiries: mongoCounts ? Math.max(mongoCounts.bookings, dbState.inquiries.length) : dbState.inquiries.length,
-        registrations: mongoCounts ? Math.max(mongoCounts.registrations, dbState.registrations.length) : dbState.registrations.length,
-      },
-      updatedAt: dbState.updatedAt,
-    });
+          return {
+            orders: ordersCount,
+            products: productsCount,
+            categories: categoriesCount,
+            bookings: bookingsCount,
+            inquiries: bookingsCount,
+            registrations: registrationsCount,
+          };
+        },
+        { maxAttempts: 2, baseDelayMs: 200 }
+      );
+
+      res.status(200).json({
+        status: 'ok',
+        database: 'mongodb-atlas-connected',
+        databaseName: mongoHealth.databaseName,
+        connected: true,
+        storageEngine: 'mongodb-atlas',
+        mongodb: mongoHealth,
+        firestoreProjectId: firebaseConfig.projectId,
+        firestoreDatabaseId: firebaseConfig.firestoreDatabaseId,
+        countsStatus: 'ok',
+        orders: liveCounts.orders,
+        products: liveCounts.products,
+        categories: liveCounts.categories,
+        bookings: liveCounts.bookings,
+        registrations: liveCounts.registrations,
+        counts: liveCounts,
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      const safeErr = err instanceof Error ? err.message : 'Failed to query MongoDB collection counts.';
+      res.status(503).json({
+        status: 'degraded',
+        database: 'mongodb-atlas-connected',
+        databaseName: mongoHealth.databaseName,
+        connected: true,
+        storageEngine: 'mongodb-atlas',
+        mongodb: mongoHealth,
+        countsStatus: 'error',
+        error: `Database connected to "${mongoHealth.databaseName}", but collection count query failed: ${safeErr}`,
+      });
+    }
   });
 
   // ============================================================================
@@ -469,53 +516,35 @@ export function createExpressApiApp(): express.Express {
   });
 
   // ============================================================================
-  // ORDERS API (/api/orders) — Connected to MongoDB `orders` Collection
+  // ORDERS API (/api/orders) — Authoritative MongoDB `orders` Collection
   // ============================================================================
 
-  // GET /api/orders — Fetch all persisted orders sorted newest first
+  // GET /api/orders — Fetch all persisted orders from authoritative MongoDB sorted newest first
   app.get('/api/orders', async (req: Request, res: Response) => {
     try {
-      const dbState = ensureDatabaseInitialized();
+      if (req.query.__simulateDbFailure === 'true') {
+        throw new MongoPersistenceError(
+          'Simulated database connectivity failure while reading orders.',
+          503
+        );
+      }
+
       const userIdFilter = typeof req.query.userId === 'string' ? req.query.userId.trim() : '';
-
-      const byOrderId = new Map<string, PersistedOrderRecord>();
-
-      // 1. Load from local mirror first
-      for (const localOrder of dbState.orders) {
-        const key = localOrder.orderId || localOrder.id;
-        if (!dbState.deletedOrderIds.includes(key)) {
-          byOrderId.set(key, localOrder);
-        }
-      }
-
-      // 2. Load from MongoDB Atlas `orders` collection (authoritative when connected)
-      try {
-        const mongoDb = await getMongoDatabase();
-        if (mongoDb) {
-          const filter: Record<string, unknown> = {};
-          if (userIdFilter) filter.userId = userIdFilter;
-          const mongoOrders = await mongoDb
-            .collection<MongoOrderDoc>(MONGO_COLLECTIONS.ORDERS)
-            .find(filter)
-            .sort({ createdAt: -1 })
-            .toArray();
-
-          for (const mo of mongoOrders) {
-            const clean = stripMongoId(mo) as PersistedOrderRecord;
-            const key = clean.orderId || clean.id;
-            if (!dbState.deletedOrderIds.includes(key)) {
-              byOrderId.set(key, clean);
-            }
-          }
-        }
-      } catch {
-        // Use local mirror silently
-      }
-
       const statusFilter = typeof req.query.status === 'string' ? req.query.status.trim() : '';
       const searchQuery = typeof req.query.search === 'string' ? req.query.search.trim().toLowerCase() : '';
 
-      const sortedOrders = Array.from(byOrderId.values())
+      const mongoOrders = await withMongoRetry(async (mongoDb) => {
+        const filter: Record<string, unknown> = {};
+        if (userIdFilter) filter.userId = userIdFilter;
+        const docs = await mongoDb
+          .collection<MongoOrderDoc>(MONGO_COLLECTIONS.ORDERS)
+          .find(filter)
+          .sort({ createdAt: -1 })
+          .toArray();
+        return docs.map((mo) => stripMongoId(mo) as PersistedOrderRecord);
+      });
+
+      const sortedOrders = mongoOrders
         .filter((o) => (userIdFilter ? o.userId === userIdFilter : true))
         .filter((o) => (statusFilter && statusFilter !== 'all' ? o.status === statusFilter : true))
         .filter((o) => {
@@ -544,46 +573,43 @@ export function createExpressApiApp(): express.Express {
       });
     } catch (err) {
       console.error('[GET /api/orders] Error:', err);
-      res.status(500).json({
+      const statusCode = err instanceof MongoPersistenceError ? err.statusCode : 503;
+      res.status(statusCode).json({
         success: false,
-        error: 'Failed to retrieve customer orders from the production database.',
+        error:
+          err instanceof Error
+            ? err.message
+            : 'Database unavailable: Failed to retrieve customer orders from MongoDB.',
       });
     }
   });
 
-  // GET /api/orders/:orderId — Fetch single persisted order by ID
+  // GET /api/orders/:orderId — Fetch single persisted order by ID from authoritative MongoDB
   app.get('/api/orders/:orderId', async (req: Request, res: Response) => {
     try {
-      const dbState = ensureDatabaseInitialized();
-      const targetId = String(req.params.orderId || '').trim();
-      if (dbState.deletedOrderIds.includes(targetId)) {
-        res.status(404).json({
-          success: false,
-          error: `Order ${targetId} not found.`,
-        });
-        return;
-      }
-
-      let found: PersistedOrderRecord | undefined;
-
-      try {
-        const mongoDb = await getMongoDatabase();
-        if (mongoDb) {
-          const mongoOrder = await mongoDb
-            .collection<MongoOrderDoc>(MONGO_COLLECTIONS.ORDERS)
-            .findOne({ $or: [{ orderId: targetId }, { id: targetId }] });
-          if (mongoOrder) {
-            found = stripMongoId(mongoOrder) as PersistedOrderRecord;
-          }
-        }
-      } catch {}
-
-      if (!found) {
-        found = dbState.orders.find(
-          (o) => (o.orderId === targetId || o.id === targetId) && !dbState.deletedOrderIds.includes(targetId)
+      if (req.query.__simulateDbFailure === 'true') {
+        throw new MongoPersistenceError(
+          'Simulated database connectivity failure while reading order details.',
+          503
         );
       }
 
+      const targetId = String(req.params.orderId || '').trim();
+      if (!targetId) {
+        res.status(400).json({
+          success: false,
+          error: 'Order ID is required.',
+        });
+        return;
+      }
+
+      const found = await withMongoRetry(async (mongoDb) => {
+        const mongoOrder = await mongoDb
+          .collection<MongoOrderDoc>(MONGO_COLLECTIONS.ORDERS)
+          .findOne({ $or: [{ orderId: targetId }, { id: targetId }] });
+        return mongoOrder ? (stripMongoId(mongoOrder) as PersistedOrderRecord) : null;
+      });
+
       if (!found) {
         res.status(404).json({
           success: false,
@@ -591,32 +617,39 @@ export function createExpressApiApp(): express.Express {
         });
         return;
       }
+
       res.status(200).json({
         success: true,
         order: found,
       });
     } catch (err) {
       console.error('[GET /api/orders/:orderId] Error:', err);
-      res.status(500).json({
+      const statusCode = err instanceof MongoPersistenceError ? err.statusCode : 503;
+      res.status(statusCode).json({
         success: false,
-        error: 'Failed to retrieve order details.',
+        error: err instanceof Error ? err.message : 'Failed to retrieve order details from MongoDB.',
       });
     }
   });
 
-  // POST /api/orders — Validate and permanently persist a new customer order to MongoDB + Local Mirror
+  // POST /api/orders — Validate and permanently persist a new customer order to authoritative MongoDB
   app.post('/api/orders', async (req: Request, res: Response) => {
     try {
       const body = req.body || {};
 
-      // Allow testing simulated database failure via explicit flag
+      // Allow testing simulated database failure via explicit flag (never writes to /tmp or MongoDB)
       if (body.__simulateDbFailure === true) {
-        res.status(500).json({
+        res.status(503).json({
           success: false,
-          error: 'Database transaction failed: Unable to commit order to production storage.',
+          error: 'Database transaction failed: Unable to commit order to MongoDB storage.',
         });
         return;
       }
+
+      const simulatedTransientFailures =
+        typeof body.__simulateTransientFailures === 'number' && body.__simulateTransientFailures > 0
+          ? Math.floor(body.__simulateTransientFailures)
+          : 0;
 
       const customerName = typeof body.customerName === 'string' ? body.customerName.trim() : '';
       const customerPhone = typeof body.customerPhone === 'string' ? body.customerPhone.trim() : '';
@@ -661,39 +694,7 @@ export function createExpressApiApp(): express.Express {
         return;
       }
 
-      const dbState = ensureDatabaseInitialized();
-      const mongoDb = await getMongoDatabase();
-
-      // 1. Idempotency protection against duplicate submissions (check both MongoDB and local mirror)
-      if (idempotencyKey) {
-        if (mongoDb) {
-          const existingMongo = await mongoDb
-            .collection<MongoOrderDoc>(MONGO_COLLECTIONS.ORDERS)
-            .findOne({ idempotencyKey });
-          if (existingMongo && !dbState.deletedOrderIds.includes(existingMongo.orderId)) {
-            res.status(200).json({
-              success: true,
-              order: stripMongoId(existingMongo),
-              deduplicated: true,
-            });
-            return;
-          }
-        }
-
-        const existingByKey = dbState.orders.find(
-          (o) => o.idempotencyKey === idempotencyKey && !dbState.deletedOrderIds.includes(o.orderId)
-        );
-        if (existingByKey) {
-          res.status(200).json({
-            success: true,
-            order: existingByKey,
-            deduplicated: true,
-          });
-          return;
-        }
-      }
-
-      // 2. Normalize and validate every product entry (preserving weight ½ KG / 1 KG, category, price, quantity)
+      // Normalize and validate every product entry (preserving weight ½ KG / 1 KG, category, price, quantity)
       const validatedItems: OrderProductEntry[] = [];
       let calculatedTotalNumeric = 0;
 
@@ -737,112 +738,128 @@ export function createExpressApiApp(): express.Express {
         });
       }
 
-      // 3. Serialize sequence generation & persistence across concurrent requests
+      // Serialize sequence generation & authoritative MongoDB persistence across concurrent requests
       const createdResult = await withOrderCreationLock(async () => {
-        const freshDbState = ensureDatabaseInitialized();
+        let allocatedSeq: number | null = null;
 
-        // Re-check idempotency inside lock in case a duplicate request arrived at the exact same millisecond
-        if (idempotencyKey) {
-          if (mongoDb) {
-            const existingMongo = await mongoDb
-              .collection<MongoOrderDoc>(MONGO_COLLECTIONS.ORDERS)
-              .findOne({ idempotencyKey });
-            if (existingMongo && !freshDbState.deletedOrderIds.includes(existingMongo.orderId)) {
-              return { order: stripMongoId(existingMongo) as PersistedOrderRecord, deduplicated: true };
+        return await withMongoRetry(
+          async (mongoDb, attempt) => {
+            const ordersCol = mongoDb.collection<MongoOrderDoc>(MONGO_COLLECTIONS.ORDERS);
+            const bookingsCol = mongoDb.collection<MongoBookingDoc>(MONGO_COLLECTIONS.BOOKINGS);
+
+            // 1. Check idempotency key in MongoDB first (also catches retries where a prior attempt succeeded)
+            if (idempotencyKey) {
+              const existingMongo = await ordersCol.findOne({ idempotencyKey });
+              if (existingMongo) {
+                return {
+                  order: stripMongoId(existingMongo) as PersistedOrderRecord,
+                  deduplicated: true,
+                  attempts: attempt,
+                };
+              }
             }
-          }
-          const existingByKey = freshDbState.orders.find(
-            (o) => o.idempotencyKey === idempotencyKey && !freshDbState.deletedOrderIds.includes(o.orderId)
-          );
-          if (existingByKey) {
-            return { order: existingByKey, deduplicated: true };
-          }
-        }
 
-        const localFloor = Math.max(1024, freshDbState.lastOrderSequence || 1024);
-        let nextSeq = localFloor + 1;
+            // Support deterministic testing of transient retry behavior before allocating sequence
+            if (simulatedTransientFailures > 0 && attempt <= simulatedTransientFailures) {
+              throw new Error(
+                `Simulated transient MongoDB write timeout on attempt ${attempt} of ${simulatedTransientFailures}.`
+              );
+            }
 
-        if (mongoDb) {
-          try {
-            nextSeq = await getNextMongoOrderSequence(mongoDb, localFloor);
-          } catch {
-            // Use localFloor + 1 fallback silently
-          }
-        }
+            // 2. Allocate order sequence atomically in MongoDB (reusing allocatedSeq if retrying within same request)
+            if (allocatedSeq === null) {
+              let nextSeq = await getNextMongoOrderSequence(mongoDb, 1024);
+              while (await ordersCol.findOne({ orderId: `BGC${nextSeq}` })) {
+                nextSeq = await getNextMongoOrderSequence(mongoDb, nextSeq);
+              }
+              allocatedSeq = nextSeq;
+            }
 
-        const existingOrderIds = new Set([
-          ...freshDbState.orders.map((o) => o.orderId),
-          ...freshDbState.deletedOrderIds,
-        ]);
-        while (existingOrderIds.has(`BGC${nextSeq}`)) {
-          nextSeq += 1;
-        }
+            const orderId = `BGC${allocatedSeq}`;
+            const nowIso = new Date().toISOString();
+            const hasRegularBrownie = validatedItems.some((i) => i.category === 'brownie');
+            const hasFrostedBrownie = validatedItems.some((i) => i.category === 'frosted_brownie' || i.isAddon);
 
-        if (mongoDb) {
-          while (
-            await mongoDb
-              .collection<MongoOrderDoc>(MONGO_COLLECTIONS.ORDERS)
-              .findOne({ orderId: `BGC${nextSeq}` })
-          ) {
-            nextSeq += 1;
-          }
-        }
+            const newOrder: PersistedOrderRecord = {
+              id: orderId,
+              orderId,
+              ...(idempotencyKey ? { idempotencyKey } : {}),
+              userId,
+              customerName,
+              customerEmail,
+              customerPhone,
+              deliveryAddress,
+              specialInstructions,
+              items: validatedItems,
+              totalAmount: formatRupeeServer(calculatedTotalNumeric),
+              totalAmountNumeric: calculatedTotalNumeric,
+              hasFrostedAddon: hasRegularBrownie && hasFrostedBrownie,
+              paymentStatus: 'pending',
+              status: 'received',
+              isRead: false,
+              createdAt: nowIso,
+              updatedAt: nowIso,
+            };
 
-        freshDbState.lastOrderSequence = nextSeq;
-        const orderId = `BGC${nextSeq}`;
+            const mirrorInquiry = buildInquirySummaryFromOrder(newOrder);
 
-        const nowIso = new Date().toISOString();
-        const hasRegularBrownie = validatedItems.some((i) => i.category === 'brownie');
-        const hasFrostedBrownie = validatedItems.some((i) => i.category === 'frosted_brownie' || i.isAddon);
+            // 3. Persist order to MongoDB and verify acknowledgement
+            const existingByOrderId = await ordersCol.findOne({ orderId });
+            if (!existingByOrderId) {
+              try {
+                const insertRes = await ordersCol.insertOne({ ...(newOrder as MongoOrderDoc) });
+                if (!insertRes.acknowledged) {
+                  throw new MongoPersistenceError('MongoDB did not acknowledge order insertion.', 503, attempt);
+                }
+              } catch (insertErr: any) {
+                // If duplicate key on idempotencyKey occurred during concurrent/retry race, return existing order
+                if (insertErr?.code === 11000 && idempotencyKey) {
+                  const racedDoc = await ordersCol.findOne({ idempotencyKey });
+                  if (racedDoc) {
+                    return {
+                      order: stripMongoId(racedDoc) as PersistedOrderRecord,
+                      deduplicated: true,
+                      attempts: attempt,
+                    };
+                  }
+                }
+                throw insertErr;
+              }
+            }
 
-        const newOrder: PersistedOrderRecord = {
-          id: orderId,
-          orderId,
-          ...(idempotencyKey ? { idempotencyKey } : {}),
-          userId,
-          customerName,
-          customerEmail,
-          customerPhone,
-          deliveryAddress,
-          specialInstructions,
-          items: validatedItems,
-          totalAmount: formatRupeeServer(calculatedTotalNumeric),
-          totalAmountNumeric: calculatedTotalNumeric,
-          hasFrostedAddon: hasRegularBrownie && hasFrostedBrownie,
-          paymentStatus: 'pending',
-          status: 'received',
-          isRead: false,
-          createdAt: nowIso,
-          updatedAt: nowIso,
-        };
+            // 4. Persist mirror booking summary to MongoDB and verify acknowledgement
+            const mirrorBookingDoc: MongoBookingDoc = {
+              ...mirrorInquiry,
+              bookingId: mirrorInquiry.bookingId || mirrorInquiry.id,
+              updatedAt: nowIso,
+            };
+            const bookingRes = await bookingsCol.updateOne(
+              { id: mirrorBookingDoc.id },
+              { $set: mirrorBookingDoc },
+              { upsert: true }
+            );
+            if (!bookingRes.acknowledged) {
+              throw new MongoPersistenceError('MongoDB did not acknowledge booking mirror write.', 503, attempt);
+            }
 
-        const mirrorInquiry = buildInquirySummaryFromOrder(newOrder);
+            // 5. Verify persisted document exists in MongoDB before returning success
+            const confirmedDoc = await ordersCol.findOne({ orderId });
+            if (!confirmedDoc) {
+              throw new MongoPersistenceError(
+                `Order ${orderId} could not be verified in MongoDB after write.`,
+                503,
+                attempt
+              );
+            }
 
-        if (mongoDb) {
-          await mongoDb
-            .collection<MongoOrderDoc>(MONGO_COLLECTIONS.ORDERS)
-            .insertOne({ ...(newOrder as MongoOrderDoc) });
-
-          const mirrorBookingDoc: MongoBookingDoc = {
-            ...mirrorInquiry,
-            bookingId: mirrorInquiry.bookingId || mirrorInquiry.id,
-            updatedAt: nowIso,
-          };
-          await mongoDb
-            .collection<MongoBookingDoc>(MONGO_COLLECTIONS.BOOKINGS)
-            .updateOne({ id: mirrorBookingDoc.id }, { $set: mirrorBookingDoc }, { upsert: true });
-        }
-
-        const latestDbState = ensureDatabaseInitialized();
-        latestDbState.lastOrderSequence = Math.max(latestDbState.lastOrderSequence || 1024, nextSeq);
-        latestDbState.orders.unshift(newOrder);
-        latestDbState.inquiries = [
-          mirrorInquiry,
-          ...latestDbState.inquiries.filter((inq) => inq.id !== mirrorInquiry.id),
-        ];
-        saveDatabaseAtomically(latestDbState);
-
-        return { order: newOrder, deduplicated: false };
+            return {
+              order: stripMongoId(confirmedDoc) as PersistedOrderRecord,
+              deduplicated: false,
+              attempts: attempt,
+            };
+          },
+          { maxAttempts: 3, baseDelayMs: 250 }
+        );
       });
 
       if (createdResult.deduplicated) {
@@ -850,50 +867,148 @@ export function createExpressApiApp(): express.Express {
           success: true,
           order: createdResult.order,
           deduplicated: true,
+          attempts: createdResult.attempts,
         });
         return;
       }
 
       console.log(
-        `[POST /api/orders] Persisted Order ${createdResult.order.orderId} for ${customerName} (${validatedItems.length} items, Total: ${createdResult.order.totalAmount})`
+        `[POST /api/orders] Confirmed MongoDB Order ${createdResult.order.orderId} for ${customerName} (${validatedItems.length} items, Total: ${createdResult.order.totalAmount}, attempts=${createdResult.attempts})`
       );
 
       res.status(201).json({
         success: true,
         order: createdResult.order,
+        attempts: createdResult.attempts,
       });
     } catch (err) {
-      console.error('[POST /api/orders] Critical error saving order:', err);
-      res.status(500).json({
+      console.error('[POST /api/orders] Critical error saving order to MongoDB:', err);
+      const statusCode = err instanceof MongoPersistenceError ? err.statusCode : 503;
+      res.status(statusCode).json({
         success: false,
         error: err instanceof Error ? err.message : 'Failed to save order to production database.',
       });
     }
   });
 
-  // PATCH /api/orders/:orderId — Update order status or read state in MongoDB + Local Mirror
+  // PATCH /api/orders/:orderId — Update order status, paymentStatus, or read state in authoritative MongoDB
   app.patch('/api/orders/:orderId', async (req: Request, res: Response) => {
     try {
       const targetId = String(req.params.orderId || '').trim();
       const updates = req.body || {};
-      const dbState = ensureDatabaseInitialized();
-      const mongoDb = await getMongoDatabase();
-      const nowIso = new Date().toISOString();
 
-      let currentOrder: PersistedOrderRecord | undefined;
-      const idx = dbState.orders.findIndex((o) => o.orderId === targetId || o.id === targetId);
-      if (idx !== -1) {
-        currentOrder = dbState.orders[idx];
-      } else if (mongoDb) {
-        const fromMongo = await mongoDb
-          .collection<MongoOrderDoc>(MONGO_COLLECTIONS.ORDERS)
-          .findOne({ $or: [{ orderId: targetId }, { id: targetId }] });
-        if (fromMongo) {
-          currentOrder = stripMongoId(fromMongo) as PersistedOrderRecord;
-        }
+      if (updates.__simulateDbFailure === true) {
+        res.status(503).json({
+          success: false,
+          error: 'Database transaction failed: Unable to update order in MongoDB.',
+        });
+        return;
       }
 
-      if (!currentOrder) {
+      const ALLOWED_ORDER_STATUSES = [
+        'received',
+        'baking',
+        'finishing',
+        'out_for_delivery',
+        'delivered',
+        'cancelled',
+      ] as const;
+      const ALLOWED_PAYMENT_STATUSES = ['pending', 'paid', 'failed', 'refunded', 'cod'] as const;
+
+      if (
+        updates.status !== undefined &&
+        (typeof updates.status !== 'string' ||
+          !ALLOWED_ORDER_STATUSES.includes(updates.status as any))
+      ) {
+        res.status(400).json({
+          success: false,
+          error: `Invalid order status "${updates.status}". Allowed values: ${ALLOWED_ORDER_STATUSES.join(', ')}.`,
+        });
+        return;
+      }
+
+      if (
+        updates.paymentStatus !== undefined &&
+        (typeof updates.paymentStatus !== 'string' ||
+          !ALLOWED_PAYMENT_STATUSES.includes(updates.paymentStatus as any))
+      ) {
+        res.status(400).json({
+          success: false,
+          error: `Invalid payment status "${updates.paymentStatus}". Allowed values: pending, paid, failed, refunded.`,
+        });
+        return;
+      }
+
+      const nowIso = new Date().toISOString();
+
+      const updatedOrder = await withMongoRetry(async (mongoDb) => {
+        const ordersCol = mongoDb.collection<MongoOrderDoc>(MONGO_COLLECTIONS.ORDERS);
+        const bookingsCol = mongoDb.collection<MongoBookingDoc>(MONGO_COLLECTIONS.BOOKINGS);
+
+        const existing = await ordersCol.findOne({ $or: [{ orderId: targetId }, { id: targetId }] });
+        if (!existing) {
+          return null;
+        }
+
+        const currentOrder = stripMongoId(existing) as PersistedOrderRecord;
+        // CRITICAL BUSINESS RULE: Order Status (`status`) and Payment Status (`paymentStatus`) are strictly independent.
+        // Updating `status` (even to `delivered`) NEVER automatically marks `paymentStatus` as `paid`.
+        // Updating `paymentStatus` NEVER automatically changes `status`.
+        const nextStatus =
+          typeof updates.status === 'string' ? (updates.status as PersistedOrderRecord['status']) : currentOrder.status;
+        const nextPaymentStatus =
+          typeof updates.paymentStatus === 'string'
+            ? (updates.paymentStatus as PersistedOrderRecord['paymentStatus'])
+            : currentOrder.paymentStatus || 'pending';
+        const nextIsRead =
+          typeof updates.isRead === 'boolean' ? updates.isRead : Boolean(currentOrder.isRead);
+
+        const nextOrder: PersistedOrderRecord = {
+          ...currentOrder,
+          status: nextStatus,
+          paymentStatus: nextPaymentStatus,
+          isRead: nextIsRead,
+          updatedAt: nowIso,
+        };
+
+        const updateRes = await ordersCol.updateOne(
+          { $or: [{ orderId: targetId }, { id: targetId }] },
+          {
+            $set: {
+              status: nextOrder.status,
+              paymentStatus: nextOrder.paymentStatus,
+              isRead: nextOrder.isRead,
+              updatedAt: nowIso,
+            },
+          }
+        );
+
+        if (!updateRes.acknowledged) {
+          throw new MongoPersistenceError('MongoDB did not acknowledge order status update.', 503);
+        }
+
+        const mirrorId = `order_${targetId}`;
+        await bookingsCol.updateOne(
+          { $or: [{ id: mirrorId }, { orderId: targetId }] },
+          {
+            $set: {
+              isRead: Boolean(nextOrder.isRead),
+              status:
+                nextOrder.status === 'delivered' || nextOrder.status === 'cancelled'
+                  ? 'closed'
+                  : nextOrder.isRead
+                  ? 'read'
+                  : 'new',
+              updatedAt: nowIso,
+            },
+          }
+        );
+
+        const refreshed = await ordersCol.findOne({ $or: [{ orderId: targetId }, { id: targetId }] });
+        return refreshed ? (stripMongoId(refreshed) as PersistedOrderRecord) : nextOrder;
+      });
+
+      if (!updatedOrder) {
         res.status(404).json({
           success: false,
           error: `Order ${targetId} not found in database.`,
@@ -901,95 +1016,28 @@ export function createExpressApiApp(): express.Express {
         return;
       }
 
-      const updatedOrder: PersistedOrderRecord = {
-        ...currentOrder,
-        ...(typeof updates.status === 'string' ? { status: updates.status } : {}),
-        ...(typeof updates.paymentStatus === 'string' ? { paymentStatus: updates.paymentStatus } : {}),
-        ...(typeof updates.isRead === 'boolean' ? { isRead: updates.isRead } : {}),
-        updatedAt: nowIso,
-      };
-
-      if (mongoDb) {
-        await mongoDb
-          .collection<MongoOrderDoc>(MONGO_COLLECTIONS.ORDERS)
-          .updateOne(
-            { $or: [{ orderId: targetId }, { id: targetId }] },
-            {
-              $set: {
-                status: updatedOrder.status,
-                paymentStatus: updatedOrder.paymentStatus,
-                isRead: updatedOrder.isRead,
-                updatedAt: nowIso,
-              },
-            }
-          );
-
-        const mirrorId = `order_${targetId}`;
-        await mongoDb.collection<MongoBookingDoc>(MONGO_COLLECTIONS.BOOKINGS).updateOne(
-          { $or: [{ id: mirrorId }, { orderId: targetId }] },
-          {
-            $set: {
-              isRead: Boolean(updatedOrder.isRead),
-              status:
-                updatedOrder.status === 'delivered' || updatedOrder.status === 'cancelled'
-                  ? 'closed'
-                  : updatedOrder.isRead
-                  ? 'read'
-                  : 'new',
-              updatedAt: nowIso,
-            },
-          }
-        );
-      }
-
-      if (idx !== -1) {
-        dbState.orders[idx] = updatedOrder;
-      } else {
-        dbState.orders.unshift(updatedOrder);
-      }
-
-      // Also update mirror inquiry in local state if present
-      const mirrorId = `order_${targetId}`;
-      const inqIdx = dbState.inquiries.findIndex((i) => i.id === mirrorId || i.orderId === targetId);
-      if (inqIdx !== -1) {
-        dbState.inquiries[inqIdx] = {
-          ...dbState.inquiries[inqIdx],
-          isRead: updatedOrder.isRead ?? dbState.inquiries[inqIdx].isRead,
-          status:
-            updatedOrder.status === 'delivered' || updatedOrder.status === 'cancelled'
-              ? 'closed'
-              : updatedOrder.isRead
-              ? 'read'
-              : dbState.inquiries[inqIdx].status,
-          updatedAt: nowIso,
-        };
-      }
-
-      saveDatabaseAtomically(dbState);
-
       res.status(200).json({
         success: true,
         order: updatedOrder,
       });
     } catch (err) {
       console.error('[PATCH /api/orders/:orderId] Error:', err);
-      res.status(500).json({
+      const statusCode = err instanceof MongoPersistenceError ? err.statusCode : 503;
+      res.status(statusCode).json({
         success: false,
-        error: 'Failed to update order status in database.',
+        error: err instanceof Error ? err.message : 'Failed to update order status in database.',
       });
     }
   });
 
-  // DELETE /api/orders/:orderId — Permanently delete order from MongoDB + Local Mirror
+  // DELETE /api/orders/:orderId — Permanently delete order from authoritative MongoDB
   app.delete('/api/orders/:orderId', async (req: Request, res: Response) => {
     try {
       const targetId = String(req.params.orderId || '').trim();
-      const dbState = ensureDatabaseInitialized();
-      const mongoDb = await getMongoDatabase();
       const mirrorId = `order_${targetId}`;
 
-      if (mongoDb) {
-        await Promise.all([
+      await withMongoRetry(async (mongoDb) => {
+        const [ordRes, bkgRes] = await Promise.all([
           mongoDb
             .collection<MongoOrderDoc>(MONGO_COLLECTIONS.ORDERS)
             .deleteMany({ $or: [{ orderId: targetId }, { id: targetId }] }),
@@ -997,18 +1045,21 @@ export function createExpressApiApp(): express.Express {
             .collection<MongoBookingDoc>(MONGO_COLLECTIONS.BOOKINGS)
             .deleteMany({ $or: [{ id: mirrorId }, { orderId: targetId }] }),
         ]);
-      }
 
+        if (!ordRes.acknowledged || !bkgRes.acknowledged) {
+          throw new MongoPersistenceError('MongoDB did not acknowledge order deletion.', 503);
+        }
+      });
+
+      const dbState = ensureDatabaseInitialized();
       dbState.orders = dbState.orders.filter((o) => o.orderId !== targetId && o.id !== targetId);
       if (!dbState.deletedOrderIds.includes(targetId)) {
         dbState.deletedOrderIds.push(targetId);
       }
-
       dbState.inquiries = dbState.inquiries.filter((i) => i.id !== mirrorId && i.orderId !== targetId);
       if (!dbState.deletedInquiryIds.includes(mirrorId)) {
         dbState.deletedInquiryIds.push(mirrorId);
       }
-
       saveDatabaseAtomically(dbState);
 
       res.status(200).json({
@@ -1017,57 +1068,44 @@ export function createExpressApiApp(): express.Express {
       });
     } catch (err) {
       console.error('[DELETE /api/orders/:orderId] Error:', err);
-      res.status(500).json({
+      const statusCode = err instanceof MongoPersistenceError ? err.statusCode : 503;
+      res.status(statusCode).json({
         success: false,
-        error: 'Failed to delete order from database.',
+        error: err instanceof Error ? err.message : 'Failed to delete order from database.',
       });
     }
   });
 
   // ============================================================================
   // BOOKINGS & CUSTOM ORDERS API (/api/inquiries & /api/bookings)
-  // Connected to MongoDB `bookings` Collection
+  // Authoritative MongoDB `bookings` Collection
   // ============================================================================
 
   const handleGetBookings = async (req: Request, res: Response) => {
     try {
-      const dbState = ensureDatabaseInitialized();
+      if (req.query.__simulateDbFailure === 'true') {
+        throw new MongoPersistenceError(
+          'Simulated database connectivity failure while reading bookings.',
+          503
+        );
+      }
+
       const userIdFilter = typeof req.query.userId === 'string' ? req.query.userId.trim() : '';
-
-      const byId = new Map<string, PersistedInquiryRecord>();
-
-      for (const localInq of dbState.inquiries) {
-        if (!dbState.deletedInquiryIds.includes(localInq.id)) {
-          byId.set(localInq.id, localInq);
-        }
-      }
-
-      try {
-        const mongoDb = await getMongoDatabase();
-        if (mongoDb) {
-          const filter: Record<string, unknown> = {};
-          if (userIdFilter) filter.userId = userIdFilter;
-          const mongoBookings = await mongoDb
-            .collection<MongoBookingDoc>(MONGO_COLLECTIONS.BOOKINGS)
-            .find(filter)
-            .sort({ createdAt: -1 })
-            .toArray();
-
-          for (const mb of mongoBookings) {
-            const clean = stripMongoId(mb) as PersistedInquiryRecord;
-            if (!dbState.deletedInquiryIds.includes(clean.id)) {
-              byId.set(clean.id, clean);
-            }
-          }
-        }
-      } catch {
-        // Use local mirror silently
-      }
-
       const statusFilter = typeof req.query.status === 'string' ? req.query.status.trim() : '';
       const searchQuery = typeof req.query.search === 'string' ? req.query.search.trim().toLowerCase() : '';
 
-      const list = Array.from(byId.values())
+      const mongoBookings = await withMongoRetry(async (mongoDb) => {
+        const filter: Record<string, unknown> = {};
+        if (userIdFilter) filter.userId = userIdFilter;
+        const docs = await mongoDb
+          .collection<MongoBookingDoc>(MONGO_COLLECTIONS.BOOKINGS)
+          .find(filter)
+          .sort({ createdAt: -1 })
+          .toArray();
+        return docs.map((mb) => stripMongoId(mb) as PersistedInquiryRecord);
+      });
+
+      const list = mongoBookings
         .filter((i) => (userIdFilter ? i.userId === userIdFilter : true))
         .filter((i) => {
           if (!statusFilter || statusFilter === 'all') return true;
@@ -1102,9 +1140,10 @@ export function createExpressApiApp(): express.Express {
       });
     } catch (err) {
       console.error('[GET /api/inquiries] Error:', err);
-      res.status(500).json({
+      const statusCode = err instanceof MongoPersistenceError ? err.statusCode : 503;
+      res.status(statusCode).json({
         success: false,
-        error: 'Failed to retrieve inquiries.',
+        error: err instanceof Error ? err.message : 'Failed to retrieve inquiries from MongoDB.',
       });
     }
   };
@@ -1117,12 +1156,17 @@ export function createExpressApiApp(): express.Express {
       const body = req.body || {};
 
       if (body.__simulateDbFailure === true) {
-        res.status(500).json({
+        res.status(503).json({
           success: false,
-          error: 'Database transaction failed: Unable to save booking to production storage.',
+          error: 'Database transaction failed: Unable to save booking to MongoDB storage.',
         });
         return;
       }
+
+      const simulatedTransientFailures =
+        typeof body.__simulateTransientFailures === 'number' && body.__simulateTransientFailures > 0
+          ? Math.floor(body.__simulateTransientFailures)
+          : 0;
 
       const subject = typeof body.subject === 'string' ? body.subject.trim() : '';
       const message = typeof body.message === 'string' ? body.message.trim() : '';
@@ -1162,100 +1206,128 @@ export function createExpressApiApp(): express.Express {
         return;
       }
 
-      const dbState = ensureDatabaseInitialized();
-      const mongoDb = await getMongoDatabase();
-
-      // Idempotency protection against duplicate custom order / booking submissions
-      if (idempotencyKey) {
-        if (mongoDb) {
-          const existingMongo = await mongoDb
-            .collection<MongoBookingDoc>(MONGO_COLLECTIONS.BOOKINGS)
-            .findOne({ idempotencyKey });
-          if (existingMongo && !dbState.deletedInquiryIds.includes(existingMongo.id)) {
-            const clean = stripMongoId(existingMongo);
-            res.status(200).json({
-              success: true,
-              inquiry: clean,
-              booking: clean,
-              deduplicated: true,
-            });
-            return;
-          }
-        }
-
-        const existingLocal = dbState.inquiries.find(
-          (i) => i.idempotencyKey === idempotencyKey && !dbState.deletedInquiryIds.includes(i.id)
-        );
-        if (existingLocal) {
-          res.status(200).json({
-            success: true,
-            inquiry: existingLocal,
-            booking: existingLocal,
-            deduplicated: true,
-          });
-          return;
-        }
-      }
-
-      const nowIso = new Date().toISOString();
       const generatedId =
         typeof body.id === 'string' && body.id.trim()
           ? body.id.trim()
           : `BK-${Date.now()}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
 
-      const newInq: PersistedInquiryRecord = {
-        id: generatedId,
-        bookingId: generatedId,
-        ...(idempotencyKey ? { idempotencyKey } : {}),
-        userId: typeof body.userId === 'string' && body.userId.trim() ? body.userId.trim() : `guest_${Date.now()}`,
-        userName,
-        userEmail,
-        userPhone,
-        subject,
-        message,
-        ...(typeof body.eventType === 'string' && body.eventType.trim()
-          ? { eventType: body.eventType.trim() }
-          : {}),
-        ...(typeof body.eventDate === 'string' && body.eventDate.trim()
-          ? { eventDate: body.eventDate.trim() }
-          : {}),
-        ...(typeof body.guestCount === 'string' && body.guestCount.trim()
-          ? { guestCount: body.guestCount.trim() }
-          : {}),
-        ...(deliveryType ? { deliveryType } : {}),
-        ...(deliveryAddress ? { deliveryAddress } : {}),
-        status: 'new',
-        isRead: false,
-        createdAt: nowIso,
-        updatedAt: nowIso,
-      };
+      const result = await withMongoRetry(
+        async (mongoDb, attempt) => {
+          const bookingsCol = mongoDb.collection<MongoBookingDoc>(MONGO_COLLECTIONS.BOOKINGS);
 
-      // Persist to MongoDB Atlas `bookings` collection BEFORE returning 201
-      if (mongoDb) {
-        const mongoBookingDoc: MongoBookingDoc = {
-          ...newInq,
-          bookingId: newInq.bookingId || newInq.id,
-          updatedAt: nowIso,
-        };
-        await mongoDb
-          .collection<MongoBookingDoc>(MONGO_COLLECTIONS.BOOKINGS)
-          .updateOne({ id: mongoBookingDoc.id }, { $set: mongoBookingDoc }, { upsert: true });
+          // 1. Idempotency check in MongoDB
+          if (idempotencyKey) {
+            const existingMongo = await bookingsCol.findOne({ idempotencyKey });
+            if (existingMongo) {
+              return {
+                booking: stripMongoId(existingMongo) as PersistedInquiryRecord,
+                deduplicated: true,
+                attempts: attempt,
+              };
+            }
+          }
+
+          if (simulatedTransientFailures > 0 && attempt <= simulatedTransientFailures) {
+            throw new Error(
+              `Simulated transient MongoDB booking write failure on attempt ${attempt} of ${simulatedTransientFailures}.`
+            );
+          }
+
+          const nowIso = new Date().toISOString();
+          const newInq: PersistedInquiryRecord = {
+            id: generatedId,
+            bookingId: generatedId,
+            ...(idempotencyKey ? { idempotencyKey } : {}),
+            userId:
+              typeof body.userId === 'string' && body.userId.trim() ? body.userId.trim() : `guest_${Date.now()}`,
+            userName,
+            userEmail,
+            userPhone,
+            subject,
+            message,
+            ...(typeof body.eventType === 'string' && body.eventType.trim()
+              ? { eventType: body.eventType.trim() }
+              : {}),
+            ...(typeof body.eventDate === 'string' && body.eventDate.trim()
+              ? { eventDate: body.eventDate.trim() }
+              : {}),
+            ...(typeof body.guestCount === 'string' && body.guestCount.trim()
+              ? { guestCount: body.guestCount.trim() }
+              : {}),
+            ...(deliveryType ? { deliveryType } : {}),
+            ...(deliveryAddress ? { deliveryAddress } : {}),
+            status: 'new',
+            isRead: false,
+            createdAt: nowIso,
+            updatedAt: nowIso,
+          };
+
+          const mongoBookingDoc: MongoBookingDoc = {
+            ...newInq,
+            bookingId: newInq.bookingId || newInq.id,
+            updatedAt: nowIso,
+          };
+
+          try {
+            const writeRes = await bookingsCol.updateOne(
+              { id: mongoBookingDoc.id },
+              { $set: mongoBookingDoc },
+              { upsert: true }
+            );
+            if (!writeRes.acknowledged) {
+              throw new MongoPersistenceError('MongoDB did not acknowledge booking persistence.', 503, attempt);
+            }
+          } catch (writeErr: any) {
+            if (writeErr?.code === 11000 && idempotencyKey) {
+              const existingDoc = await bookingsCol.findOne({ idempotencyKey });
+              if (existingDoc) {
+                return {
+                  booking: stripMongoId(existingDoc) as PersistedInquiryRecord,
+                  deduplicated: true,
+                  attempts: attempt,
+                };
+              }
+            }
+            throw writeErr;
+          }
+
+          const confirmed = await bookingsCol.findOne({ id: mongoBookingDoc.id });
+          if (!confirmed) {
+            throw new MongoPersistenceError('Booking could not be verified in MongoDB after write.', 503, attempt);
+          }
+
+          return {
+            booking: stripMongoId(confirmed) as PersistedInquiryRecord,
+            deduplicated: false,
+            attempts: attempt,
+          };
+        },
+        { maxAttempts: 3, baseDelayMs: 250 }
+      );
+
+      if (result.deduplicated) {
+        res.status(200).json({
+          success: true,
+          inquiry: result.booking,
+          booking: result.booking,
+          deduplicated: true,
+          attempts: result.attempts,
+        });
+        return;
       }
-
-      const latestDbState = ensureDatabaseInitialized();
-      latestDbState.inquiries = [newInq, ...latestDbState.inquiries.filter((i) => i.id !== generatedId)];
-      saveDatabaseAtomically(latestDbState);
 
       res.status(201).json({
         success: true,
-        inquiry: newInq,
-        booking: newInq,
+        inquiry: result.booking,
+        booking: result.booking,
+        attempts: result.attempts,
       });
     } catch (err) {
       console.error('[POST /api/inquiries] Error:', err);
-      res.status(500).json({
+      const statusCode = err instanceof MongoPersistenceError ? err.statusCode : 503;
+      res.status(statusCode).json({
         success: false,
-        error: err instanceof Error ? err.message : 'Failed to save booking inquiry.',
+        error: err instanceof Error ? err.message : 'Failed to save booking inquiry to MongoDB.',
       });
     }
   };
@@ -1267,61 +1339,59 @@ export function createExpressApiApp(): express.Express {
     try {
       const targetId = String(req.params.id || '').trim();
       const updates = req.body || {};
-      const dbState = ensureDatabaseInitialized();
-      const mongoDb = await getMongoDatabase();
-      const nowIso = new Date().toISOString();
 
-      let currentInq: PersistedInquiryRecord | undefined;
-      const idx = dbState.inquiries.findIndex((i) => i.id === targetId || i.bookingId === targetId);
-      if (idx !== -1) {
-        currentInq = dbState.inquiries[idx];
-      } else if (mongoDb) {
-        const fromMongo = await mongoDb
-          .collection<MongoBookingDoc>(MONGO_COLLECTIONS.BOOKINGS)
-          .findOne({ $or: [{ id: targetId }, { bookingId: targetId }] });
-        if (fromMongo) {
-          currentInq = stripMongoId(fromMongo) as PersistedInquiryRecord;
-        }
+      if (updates.__simulateDbFailure === true) {
+        res.status(503).json({
+          success: false,
+          error: 'Database transaction failed: Unable to update booking in MongoDB.',
+        });
+        return;
       }
 
-      if (!currentInq) {
+      const nowIso = new Date().toISOString();
+
+      const updated = await withMongoRetry(async (mongoDb) => {
+        const bookingsCol = mongoDb.collection<MongoBookingDoc>(MONGO_COLLECTIONS.BOOKINGS);
+        const existing = await bookingsCol.findOne({ $or: [{ id: targetId }, { bookingId: targetId }] });
+        if (!existing) {
+          return null;
+        }
+
+        const currentInq = stripMongoId(existing) as PersistedInquiryRecord;
+        const nextInq: PersistedInquiryRecord = {
+          ...currentInq,
+          ...(typeof updates.status === 'string' ? { status: updates.status as any } : {}),
+          ...(typeof updates.isRead === 'boolean' ? { isRead: updates.isRead } : {}),
+          ...(updates.readAt !== undefined ? { readAt: updates.readAt } : {}),
+          updatedAt: nowIso,
+        };
+
+        const updateRes = await bookingsCol.updateOne(
+          { $or: [{ id: targetId }, { bookingId: targetId }] },
+          {
+            $set: {
+              status: nextInq.status,
+              isRead: nextInq.isRead,
+              readAt: nextInq.readAt,
+              updatedAt: nowIso,
+            },
+          }
+        );
+
+        if (!updateRes.acknowledged) {
+          throw new MongoPersistenceError('MongoDB did not acknowledge booking update.', 503);
+        }
+
+        return nextInq;
+      });
+
+      if (!updated) {
         res.status(404).json({
           success: false,
           error: `Inquiry ${targetId} not found.`,
         });
         return;
       }
-
-      const updated: PersistedInquiryRecord = {
-        ...currentInq,
-        ...(typeof updates.status === 'string' ? { status: updates.status } : {}),
-        ...(typeof updates.isRead === 'boolean' ? { isRead: updates.isRead } : {}),
-        ...(updates.readAt !== undefined ? { readAt: updates.readAt } : {}),
-        updatedAt: nowIso,
-      };
-
-      if (mongoDb) {
-        await mongoDb
-          .collection<MongoBookingDoc>(MONGO_COLLECTIONS.BOOKINGS)
-          .updateOne(
-            { $or: [{ id: targetId }, { bookingId: targetId }] },
-            {
-              $set: {
-                status: updated.status,
-                isRead: updated.isRead,
-                readAt: updated.readAt,
-                updatedAt: nowIso,
-              },
-            }
-          );
-      }
-
-      if (idx !== -1) {
-        dbState.inquiries[idx] = updated;
-      } else {
-        dbState.inquiries.unshift(updated);
-      }
-      saveDatabaseAtomically(dbState);
 
       res.status(200).json({
         success: true,
@@ -1330,9 +1400,10 @@ export function createExpressApiApp(): express.Express {
       });
     } catch (err) {
       console.error('[PATCH /api/inquiries/:id] Error:', err);
-      res.status(500).json({
+      const statusCode = err instanceof MongoPersistenceError ? err.statusCode : 503;
+      res.status(statusCode).json({
         success: false,
-        error: 'Failed to update inquiry.',
+        error: err instanceof Error ? err.message : 'Failed to update inquiry in MongoDB.',
       });
     }
   };
@@ -1343,15 +1414,18 @@ export function createExpressApiApp(): express.Express {
   const handleDeleteBooking = async (req: Request, res: Response) => {
     try {
       const targetId = String(req.params.id || '').trim();
-      const dbState = ensureDatabaseInitialized();
-      const mongoDb = await getMongoDatabase();
 
-      if (mongoDb) {
-        await mongoDb
+      await withMongoRetry(async (mongoDb) => {
+        const delRes = await mongoDb
           .collection<MongoBookingDoc>(MONGO_COLLECTIONS.BOOKINGS)
           .deleteMany({ $or: [{ id: targetId }, { bookingId: targetId }] });
-      }
 
+        if (!delRes.acknowledged) {
+          throw new MongoPersistenceError('MongoDB did not acknowledge booking deletion.', 503);
+        }
+      });
+
+      const dbState = ensureDatabaseInitialized();
       dbState.inquiries = dbState.inquiries.filter((i) => i.id !== targetId && i.bookingId !== targetId);
       if (!dbState.deletedInquiryIds.includes(targetId)) {
         dbState.deletedInquiryIds.push(targetId);
@@ -1364,9 +1438,10 @@ export function createExpressApiApp(): express.Express {
       });
     } catch (err) {
       console.error('[DELETE /api/inquiries/:id] Error:', err);
-      res.status(500).json({
+      const statusCode = err instanceof MongoPersistenceError ? err.statusCode : 503;
+      res.status(statusCode).json({
         success: false,
-        error: 'Failed to delete inquiry.',
+        error: err instanceof Error ? err.message : 'Failed to delete inquiry from MongoDB.',
       });
     }
   };
@@ -1376,48 +1451,34 @@ export function createExpressApiApp(): express.Express {
 
   // ============================================================================
   // CLASS REGISTRATIONS API (/api/registrations)
-  // Connected to MongoDB `class_registrations` Collection
+  // Authoritative MongoDB `class_registrations` Collection
   // ============================================================================
 
   app.get('/api/registrations', async (req: Request, res: Response) => {
     try {
-      const dbState = ensureDatabaseInitialized();
+      if (req.query.__simulateDbFailure === 'true') {
+        throw new MongoPersistenceError(
+          'Simulated database connectivity failure while reading class registrations.',
+          503
+        );
+      }
+
       const userIdFilter = typeof req.query.userId === 'string' ? req.query.userId.trim() : '';
-
-      const byId = new Map<string, PersistedRegistrationRecord>();
-
-      for (const localReg of dbState.registrations) {
-        if (!dbState.deletedRegistrationIds.includes(localReg.id)) {
-          byId.set(localReg.id, localReg);
-        }
-      }
-
-      try {
-        const mongoDb = await getMongoDatabase();
-        if (mongoDb) {
-          const filter: Record<string, unknown> = {};
-          if (userIdFilter) filter.userId = userIdFilter;
-          const mongoRegs = await mongoDb
-            .collection<MongoClassRegistrationDoc>(MONGO_COLLECTIONS.CLASS_REGISTRATIONS)
-            .find(filter)
-            .sort({ createdAt: -1 })
-            .toArray();
-
-          for (const mr of mongoRegs) {
-            const clean = stripMongoId(mr) as PersistedRegistrationRecord;
-            if (!dbState.deletedRegistrationIds.includes(clean.id)) {
-              byId.set(clean.id, clean);
-            }
-          }
-        }
-      } catch {
-        // Use local mirror silently
-      }
-
       const statusFilter = typeof req.query.status === 'string' ? req.query.status.trim() : '';
       const searchQuery = typeof req.query.search === 'string' ? req.query.search.trim().toLowerCase() : '';
 
-      const list = Array.from(byId.values())
+      const mongoRegs = await withMongoRetry(async (mongoDb) => {
+        const filter: Record<string, unknown> = {};
+        if (userIdFilter) filter.userId = userIdFilter;
+        const docs = await mongoDb
+          .collection<MongoClassRegistrationDoc>(MONGO_COLLECTIONS.CLASS_REGISTRATIONS)
+          .find(filter)
+          .sort({ createdAt: -1 })
+          .toArray();
+        return docs.map((mr) => stripMongoId(mr) as PersistedRegistrationRecord);
+      });
+
+      const list = mongoRegs
         .filter((r) => (userIdFilter ? r.userId === userIdFilter : true))
         .filter((r) => (statusFilter && statusFilter !== 'all' ? r.status === statusFilter : true))
         .filter((r) => {
@@ -1446,9 +1507,10 @@ export function createExpressApiApp(): express.Express {
       });
     } catch (err) {
       console.error('[GET /api/registrations] Error:', err);
-      res.status(500).json({
+      const statusCode = err instanceof MongoPersistenceError ? err.statusCode : 503;
+      res.status(statusCode).json({
         success: false,
-        error: 'Failed to retrieve class registrations.',
+        error: err instanceof Error ? err.message : 'Failed to retrieve class registrations from MongoDB.',
       });
     }
   });
@@ -1458,12 +1520,17 @@ export function createExpressApiApp(): express.Express {
       const body = req.body || {};
 
       if (body.__simulateDbFailure === true) {
-        res.status(500).json({
+        res.status(503).json({
           success: false,
-          error: 'Database transaction failed: Unable to save class registration to production storage.',
+          error: 'Database transaction failed: Unable to save class registration to MongoDB storage.',
         });
         return;
       }
+
+      const simulatedTransientFailures =
+        typeof body.__simulateTransientFailures === 'number' && body.__simulateTransientFailures > 0
+          ? Math.floor(body.__simulateTransientFailures)
+          : 0;
 
       const className = typeof body.className === 'string' ? body.className.trim() : '';
       const userName =
@@ -1487,127 +1554,135 @@ export function createExpressApiApp(): express.Express {
         return;
       }
 
-      const dbState = ensureDatabaseInitialized();
-      const mongoDb = await getMongoDatabase();
-
-      // 1. Idempotency key duplicate guard
-      if (idempotencyKey) {
-        if (mongoDb) {
-          const existingByIdem = await mongoDb
-            .collection<MongoClassRegistrationDoc>(MONGO_COLLECTIONS.CLASS_REGISTRATIONS)
-            .findOne({ idempotencyKey });
-          if (existingByIdem && !dbState.deletedRegistrationIds.includes(existingByIdem.id)) {
-            res.status(200).json({
-              success: true,
-              registration: stripMongoId(existingByIdem),
-              deduplicated: true,
-            });
-            return;
-          }
-        }
-
-        const existingLocalIdem = dbState.registrations.find(
-          (r) => r.idempotencyKey === idempotencyKey && !dbState.deletedRegistrationIds.includes(r.id)
-        );
-        if (existingLocalIdem) {
-          res.status(200).json({
-            success: true,
-            registration: existingLocalIdem,
-            deduplicated: true,
-          });
-          return;
-        }
-      }
-
-      // 2. Compound duplicate guard: prevent the same student email from double-booking the exact same class & date
-      if (userEmail && body.allowDuplicateClassDate !== true) {
-        if (mongoDb) {
-          const existingActive = await mongoDb
-            .collection<MongoClassRegistrationDoc>(MONGO_COLLECTIONS.CLASS_REGISTRATIONS)
-            .findOne({
-              userEmail,
-              className,
-              preferredDate,
-              status: { $ne: 'cancelled' },
-            });
-          if (existingActive && !dbState.deletedRegistrationIds.includes(existingActive.id)) {
-            res.status(200).json({
-              success: true,
-              registration: stripMongoId(existingActive),
-              deduplicated: true,
-            });
-            return;
-          }
-        }
-
-        const existingLocalActive = dbState.registrations.find(
-          (r) =>
-            (r.userEmail || '').toLowerCase() === userEmail &&
-            r.className === className &&
-            (r.preferredDate || 'Next Available Batch') === preferredDate &&
-            r.status !== 'cancelled' &&
-            !dbState.deletedRegistrationIds.includes(r.id)
-        );
-        if (existingLocalActive) {
-          res.status(200).json({
-            success: true,
-            registration: existingLocalActive,
-            deduplicated: true,
-          });
-          return;
-        }
-      }
-
-      const nowIso = new Date().toISOString();
       const generatedId =
         typeof body.id === 'string' && body.id.trim()
           ? body.id.trim()
           : `REG-${Date.now()}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
 
-      const newReg: PersistedRegistrationRecord = {
-        id: generatedId,
-        registrationId: generatedId,
-        ...(idempotencyKey ? { idempotencyKey } : {}),
-        userId: typeof body.userId === 'string' && body.userId.trim() ? body.userId.trim() : `guest_${Date.now()}`,
-        userName,
-        userEmail,
-        userPhone,
-        ...(typeof body.classId === 'string' && body.classId.trim() ? { classId: body.classId.trim() } : {}),
-        className,
-        preferredDate,
-        notes: typeof body.notes === 'string' ? body.notes.trim() : '',
-        status:
-          body.status === 'waitlist' || body.status === 'cancelled' ? body.status : 'registered',
-        createdAt: nowIso,
-        updatedAt: nowIso,
-      };
+      const result = await withMongoRetry(
+        async (mongoDb, attempt) => {
+          const regsCol = mongoDb.collection<MongoClassRegistrationDoc>(MONGO_COLLECTIONS.CLASS_REGISTRATIONS);
 
-      // 3. Persist to MongoDB Atlas `class_registrations` collection BEFORE returning 201
-      if (mongoDb) {
-        const mongoRegDoc: MongoClassRegistrationDoc = {
-          ...newReg,
-          registrationId: newReg.registrationId || newReg.id,
-          preferredDate: newReg.preferredDate || 'Next Available Batch',
-          updatedAt: nowIso,
-        };
-        await mongoDb
-          .collection<MongoClassRegistrationDoc>(MONGO_COLLECTIONS.CLASS_REGISTRATIONS)
-          .updateOne({ id: mongoRegDoc.id }, { $set: mongoRegDoc }, { upsert: true });
+          // 1. Idempotency key duplicate guard in MongoDB
+          if (idempotencyKey) {
+            const existingByIdem = await regsCol.findOne({ idempotencyKey });
+            if (existingByIdem) {
+              return {
+                registration: stripMongoId(existingByIdem) as PersistedRegistrationRecord,
+                deduplicated: true,
+                attempts: attempt,
+              };
+            }
+          }
+
+          // 2. Compound duplicate guard in MongoDB: prevent same student email from double-booking same class & date
+          if (userEmail && body.allowDuplicateClassDate !== true) {
+            const existingActive = await regsCol.findOne({
+              userEmail,
+              className,
+              preferredDate,
+              status: { $ne: 'cancelled' },
+            });
+            if (existingActive) {
+              return {
+                registration: stripMongoId(existingActive) as PersistedRegistrationRecord,
+                deduplicated: true,
+                attempts: attempt,
+              };
+            }
+          }
+
+          if (simulatedTransientFailures > 0 && attempt <= simulatedTransientFailures) {
+            throw new Error(
+              `Simulated transient MongoDB registration write failure on attempt ${attempt} of ${simulatedTransientFailures}.`
+            );
+          }
+
+          const nowIso = new Date().toISOString();
+          const newReg: PersistedRegistrationRecord = {
+            id: generatedId,
+            registrationId: generatedId,
+            ...(idempotencyKey ? { idempotencyKey } : {}),
+            userId:
+              typeof body.userId === 'string' && body.userId.trim() ? body.userId.trim() : `guest_${Date.now()}`,
+            userName,
+            userEmail,
+            userPhone,
+            ...(typeof body.classId === 'string' && body.classId.trim() ? { classId: body.classId.trim() } : {}),
+            className,
+            preferredDate,
+            notes: typeof body.notes === 'string' ? body.notes.trim() : '',
+            status:
+              body.status === 'waitlist' || body.status === 'cancelled' ? body.status : 'registered',
+            createdAt: nowIso,
+            updatedAt: nowIso,
+          };
+
+          const mongoRegDoc: MongoClassRegistrationDoc = {
+            ...newReg,
+            registrationId: newReg.registrationId || newReg.id,
+            preferredDate: newReg.preferredDate || 'Next Available Batch',
+            updatedAt: nowIso,
+          };
+
+          try {
+            const writeRes = await regsCol.updateOne(
+              { id: mongoRegDoc.id },
+              { $set: mongoRegDoc },
+              { upsert: true }
+            );
+            if (!writeRes.acknowledged) {
+              throw new MongoPersistenceError('MongoDB did not acknowledge registration write.', 503, attempt);
+            }
+          } catch (writeErr: any) {
+            if (writeErr?.code === 11000 && idempotencyKey) {
+              const existingDoc = await regsCol.findOne({ idempotencyKey });
+              if (existingDoc) {
+                return {
+                  registration: stripMongoId(existingDoc) as PersistedRegistrationRecord,
+                  deduplicated: true,
+                  attempts: attempt,
+                };
+              }
+            }
+            throw writeErr;
+          }
+
+          const confirmed = await regsCol.findOne({ id: mongoRegDoc.id });
+          if (!confirmed) {
+            throw new MongoPersistenceError('Registration could not be verified in MongoDB after write.', 503, attempt);
+          }
+
+          return {
+            registration: stripMongoId(confirmed) as PersistedRegistrationRecord,
+            deduplicated: false,
+            attempts: attempt,
+          };
+        },
+        { maxAttempts: 3, baseDelayMs: 250 }
+      );
+
+      if (result.deduplicated) {
+        res.status(200).json({
+          success: true,
+          registration: result.registration,
+          deduplicated: true,
+          attempts: result.attempts,
+        });
+        return;
       }
-
-      const latestDbState = ensureDatabaseInitialized();
-      latestDbState.registrations = [newReg, ...latestDbState.registrations.filter((r) => r.id !== generatedId)];
-      saveDatabaseAtomically(latestDbState);
 
       res.status(201).json({
         success: true,
-        registration: newReg,
+        registration: result.registration,
+        attempts: result.attempts,
       });
     } catch (err) {
       console.error('[POST /api/registrations] Error:', err);
-      res.status(500).json({
+      const statusCode = err instanceof MongoPersistenceError ? err.statusCode : 503;
+      res.status(statusCode).json({
         success: false,
-        error: err instanceof Error ? err.message : 'Failed to save class registration.',
+        error: err instanceof Error ? err.message : 'Failed to save class registration to MongoDB.',
       });
     }
   });
@@ -1616,24 +1691,49 @@ export function createExpressApiApp(): express.Express {
     try {
       const targetId = String(req.params.id || '').trim();
       const updates = req.body || {};
-      const dbState = ensureDatabaseInitialized();
-      const mongoDb = await getMongoDatabase();
-      const nowIso = new Date().toISOString();
 
-      let currentReg: PersistedRegistrationRecord | undefined;
-      const idx = dbState.registrations.findIndex((r) => r.id === targetId || r.registrationId === targetId);
-      if (idx !== -1) {
-        currentReg = dbState.registrations[idx];
-      } else if (mongoDb) {
-        const fromMongo = await mongoDb
-          .collection<MongoClassRegistrationDoc>(MONGO_COLLECTIONS.CLASS_REGISTRATIONS)
-          .findOne({ $or: [{ id: targetId }, { registrationId: targetId }] });
-        if (fromMongo) {
-          currentReg = stripMongoId(fromMongo) as PersistedRegistrationRecord;
-        }
+      if (updates.__simulateDbFailure === true) {
+        res.status(503).json({
+          success: false,
+          error: 'Database transaction failed: Unable to update registration in MongoDB.',
+        });
+        return;
       }
 
-      if (!currentReg) {
+      const nowIso = new Date().toISOString();
+
+      const updated = await withMongoRetry(async (mongoDb) => {
+        const regsCol = mongoDb.collection<MongoClassRegistrationDoc>(MONGO_COLLECTIONS.CLASS_REGISTRATIONS);
+        const existing = await regsCol.findOne({ $or: [{ id: targetId }, { registrationId: targetId }] });
+        if (!existing) {
+          return null;
+        }
+
+        const currentReg = stripMongoId(existing) as PersistedRegistrationRecord;
+        const nextReg: PersistedRegistrationRecord = {
+          ...currentReg,
+          ...(typeof updates.status === 'string' ? { status: updates.status as any } : {}),
+          updatedAt: nowIso,
+        };
+
+        const updateRes = await regsCol.updateOne(
+          { $or: [{ id: targetId }, { registrationId: targetId }] },
+          {
+            $set: {
+              status: nextReg.status,
+              updatedAt: nowIso,
+            },
+          }
+        );
+
+        if (!updateRes.acknowledged) {
+          throw new MongoPersistenceError('MongoDB did not acknowledge registration update.', 503);
+        }
+
+        return nextReg;
+      });
+
+      if (!updated) {
         res.status(404).json({
           success: false,
           error: `Registration ${targetId} not found.`,
@@ -1641,42 +1741,16 @@ export function createExpressApiApp(): express.Express {
         return;
       }
 
-      const updated: PersistedRegistrationRecord = {
-        ...currentReg,
-        ...(typeof updates.status === 'string' ? { status: updates.status } : {}),
-        updatedAt: nowIso,
-      };
-
-      if (mongoDb) {
-        await mongoDb
-          .collection<MongoClassRegistrationDoc>(MONGO_COLLECTIONS.CLASS_REGISTRATIONS)
-          .updateOne(
-            { $or: [{ id: targetId }, { registrationId: targetId }] },
-            {
-              $set: {
-                status: updated.status,
-                updatedAt: nowIso,
-              },
-            }
-          );
-      }
-
-      if (idx !== -1) {
-        dbState.registrations[idx] = updated;
-      } else {
-        dbState.registrations.unshift(updated);
-      }
-      saveDatabaseAtomically(dbState);
-
       res.status(200).json({
         success: true,
         registration: updated,
       });
     } catch (err) {
       console.error('[PATCH /api/registrations/:id] Error:', err);
-      res.status(500).json({
+      const statusCode = err instanceof MongoPersistenceError ? err.statusCode : 503;
+      res.status(statusCode).json({
         success: false,
-        error: 'Failed to update registration.',
+        error: err instanceof Error ? err.message : 'Failed to update registration in MongoDB.',
       });
     }
   });
@@ -1684,15 +1758,18 @@ export function createExpressApiApp(): express.Express {
   app.delete('/api/registrations/:id', async (req: Request, res: Response) => {
     try {
       const targetId = String(req.params.id || '').trim();
-      const dbState = ensureDatabaseInitialized();
-      const mongoDb = await getMongoDatabase();
 
-      if (mongoDb) {
-        await mongoDb
+      await withMongoRetry(async (mongoDb) => {
+        const delRes = await mongoDb
           .collection<MongoClassRegistrationDoc>(MONGO_COLLECTIONS.CLASS_REGISTRATIONS)
           .deleteMany({ $or: [{ id: targetId }, { registrationId: targetId }] });
-      }
 
+        if (!delRes.acknowledged) {
+          throw new MongoPersistenceError('MongoDB did not acknowledge registration deletion.', 503);
+        }
+      });
+
+      const dbState = ensureDatabaseInitialized();
       dbState.registrations = dbState.registrations.filter(
         (r) => r.id !== targetId && r.registrationId !== targetId
       );
@@ -1707,9 +1784,10 @@ export function createExpressApiApp(): express.Express {
       });
     } catch (err) {
       console.error('[DELETE /api/registrations/:id] Error:', err);
-      res.status(500).json({
+      const statusCode = err instanceof MongoPersistenceError ? err.statusCode : 503;
+      res.status(statusCode).json({
         success: false,
-        error: 'Failed to delete registration.',
+        error: err instanceof Error ? err.message : 'Failed to delete registration from MongoDB.',
       });
     }
   });
@@ -2012,12 +2090,6 @@ export function createExpressApiApp(): express.Express {
       const dbState = ensureDatabaseInitialized();
       const byId = new Map<string, MongoProductDoc>();
 
-      for (const loc of dbState.products) {
-        if (!dbState.deletedProductIds.includes(loc.id)) {
-          byId.set(loc.id, loc);
-        }
-      }
-
       try {
         const mongoDb = await getMongoDatabase();
         if (mongoDb) {
@@ -2034,6 +2106,14 @@ export function createExpressApiApp(): express.Express {
           }
         }
       } catch {}
+
+      if (byId.size === 0) {
+        for (const loc of dbState.products) {
+          if (!dbState.deletedProductIds.includes(loc.id)) {
+            byId.set(loc.id, loc);
+          }
+        }
+      }
 
       const allProducts = Array.from(byId.values()).sort(
         (a, b) => (a.sortOrder ?? 999) - (b.sortOrder ?? 999)
@@ -2177,12 +2257,6 @@ export function createExpressApiApp(): express.Express {
       const dbState = ensureDatabaseInitialized();
       const byId = new Map<string, MongoCategoryDoc>();
 
-      for (const loc of dbState.categories) {
-        if (!dbState.deletedClassIds.includes(loc.id)) {
-          byId.set(loc.id, loc);
-        }
-      }
-
       try {
         const mongoDb = await getMongoDatabase();
         if (mongoDb) {
@@ -2199,6 +2273,14 @@ export function createExpressApiApp(): express.Express {
           }
         }
       } catch {}
+
+      if (byId.size === 0) {
+        for (const loc of dbState.categories) {
+          if (!dbState.deletedClassIds.includes(loc.id)) {
+            byId.set(loc.id, loc);
+          }
+        }
+      }
 
       const allDocs = Array.from(byId.values());
       const classes = allDocs.filter((c) => c.type === 'baking_class' || !c.type);

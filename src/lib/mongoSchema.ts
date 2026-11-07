@@ -57,7 +57,7 @@ export interface MongoOrderDoc {
   totalAmount: string;
   totalAmountNumeric: number;
   hasFrostedAddon?: boolean;
-  paymentStatus?: 'pending' | 'paid' | 'cod';
+  paymentStatus?: 'pending' | 'paid' | 'failed' | 'refunded' | 'cod';
   status: 'received' | 'baking' | 'finishing' | 'out_for_delivery' | 'delivered' | 'cancelled';
   isRead?: boolean;
   createdAt: string;
@@ -263,10 +263,11 @@ export function parsePaginationParams(
 // 4. INDEX INITIALIZATION (IDEMPOTENT)
 // ============================================================================
 
-let indexesInitialized = false;
+const initializedDatabases = new Set<string>();
 
 export async function ensureMongoIndexes(db: Db): Promise<void> {
-  if (indexesInitialized) return;
+  const dbKey = db.databaseName || 'default';
+  if (initializedDatabases.has(dbKey)) return;
 
   try {
     await Promise.all([
@@ -342,7 +343,7 @@ export async function ensureMongoIndexes(db: Db): Promise<void> {
       ]),
     ]);
 
-    indexesInitialized = true;
+    initializedDatabases.add(dbKey);
   } catch {
     // Non-blocking index initialization
   }
@@ -350,17 +351,22 @@ export async function ensureMongoIndexes(db: Db): Promise<void> {
 
 /**
  * Generates the next globally unique sequential Order ID atomically in MongoDB.
+ * Preserves the existing MongoDB counter sequence and only initializes with minimumFloor
+ * if no counter document exists yet in the target database.
  */
 export async function getNextMongoOrderSequence(db: Db, minimumFloor = 1024): Promise<number> {
   const settingsCol = db.collection<MongoWebsiteSettingDoc>(MONGO_COLLECTIONS.WEBSITE_SETTINGS);
   const existingCounter = await settingsCol.findOne({ settingKey: 'counters' });
 
-  if (!existingCounter || typeof existingCounter.lastOrderSequence !== 'number' || existingCounter.lastOrderSequence < minimumFloor) {
+  if (!existingCounter || typeof existingCounter.lastOrderSequence !== 'number') {
     await settingsCol.updateOne(
       { settingKey: 'counters' },
       {
-        $max: { lastOrderSequence: minimumFloor },
-        $set: { updatedAt: new Date().toISOString() },
+        $setOnInsert: {
+          settingKey: 'counters',
+          lastOrderSequence: minimumFloor,
+          updatedAt: new Date().toISOString(),
+        },
       },
       { upsert: true }
     );
@@ -375,5 +381,9 @@ export async function getNextMongoOrderSequence(db: Db, minimumFloor = 1024): Pr
     { upsert: true, returnDocument: 'after' }
   );
 
-  return updated?.lastOrderSequence ?? minimumFloor + 1;
+  if (!updated || typeof updated.lastOrderSequence !== 'number') {
+    throw new Error('Failed to atomically increment order sequence in MongoDB.');
+  }
+
+  return updated.lastOrderSequence;
 }

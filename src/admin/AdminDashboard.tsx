@@ -7,8 +7,6 @@ import {
   DEFAULT_ADMIN_PASSWORD,
 } from '../context/ContentContext';
 import { BrownieItem, BakingClassInfo, MenuCategory, MENU_CATEGORY_LABELS } from '../data/brownies';
-import { db } from '../firebase';
-import { collection, onSnapshot, doc, updateDoc, setDoc, deleteDoc } from 'firebase/firestore';
 import {
   Settings,
   Image as ImageIcon,
@@ -459,28 +457,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       ]);
 
       if (ordersRes?.success && Array.isArray(ordersRes.orders)) {
-        const serverOrders = ordersRes.orders;
-        setAllCartOrders((prev) => {
-          const byId = new Map<string, any>();
-          for (const o of prev) {
-            const oid = o.orderId || o.id;
-            if (oid) byId.set(oid, o);
-          }
-          // Server orders are authoritative
-          for (const srv of serverOrders) {
-            const oid = srv.orderId || srv.id;
-            if (oid) byId.set(oid, srv);
-          }
-          // Filter out any IDs deleted on the server (only keep items present in serverOrders or brand new)
-          const serverIds = new Set(serverOrders.map((s: any) => s.orderId || s.id));
-          const merged = Array.from(byId.values())
-            .filter((item) => serverIds.has(item.orderId || item.id))
-            .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
-          try {
-            localStorage.setItem('browinegirl_cart_orders_v1', JSON.stringify(merged));
-          } catch {}
-          return merged;
-        });
+        const sortedOrders = [...ordersRes.orders].sort((a, b) =>
+          (b.createdAt || '').localeCompare(a.createdAt || '')
+        );
+        setAllCartOrders(sortedOrders);
       }
 
       if (inqsRes?.success && Array.isArray(inqsRes.inquiries)) {
@@ -502,80 +482,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
   };
 
-  // Fetch from production backend database on mount and whenever switching to overview/bookings tab
+  // Fetch from authoritative backend database on mount and whenever switching tabs
   useEffect(() => {
     fetchAllBackendRecords(false);
   }, [activeTab]);
-
-  useEffect(() => {
-    const unsubRegs = onSnapshot(
-      collection(db, 'class_registrations'),
-      (snapshot) => {
-        const remoteRegs: any[] = [];
-        snapshot.forEach((d) => remoteRegs.push({ id: d.id, ...d.data() }));
-        if (remoteRegs.length === 0) return;
-        setAllRegistrations((prev) => {
-          const byId = new Map<string, any>();
-          for (const p of prev) if (p.id) byId.set(p.id, p);
-          for (const r of remoteRegs) if (r.id && !deletedRegistrationIds.includes(r.id)) byId.set(r.id, r);
-          return Array.from(byId.values()).sort((a, b) =>
-            (b.createdAt || '').localeCompare(a.createdAt || '')
-          );
-        });
-      },
-      (err) => console.warn('Registrations snapshot fallback:', err)
-    );
-
-    const unsubInqs = onSnapshot(
-      collection(db, 'inquiries'),
-      (snapshot) => {
-        const remoteInqs: any[] = [];
-        snapshot.forEach((d) => remoteInqs.push({ id: d.id, ...d.data() }));
-        if (remoteInqs.length === 0) return;
-        setAllInquiries((prev) => {
-          const byId = new Map<string, any>();
-          for (const p of prev) if (p.id) byId.set(p.id, p);
-          for (const i of remoteInqs) if (i.id && !deletedInquiryIds.includes(i.id)) byId.set(i.id, i);
-          return Array.from(byId.values()).sort((a, b) =>
-            (b.createdAt || '').localeCompare(a.createdAt || '')
-          );
-        });
-      },
-      (err) => console.warn('Inquiries snapshot fallback:', err)
-    );
-
-    const unsubOrders = onSnapshot(
-      collection(db, 'orders'),
-      (snapshot) => {
-        const remoteOrders: any[] = [];
-        snapshot.forEach((d) => remoteOrders.push({ id: d.id, ...d.data() }));
-        if (remoteOrders.length === 0) return;
-        setAllCartOrders((prev) => {
-          const byId = new Map<string, any>();
-          for (const p of prev) {
-            const oid = p.orderId || p.id;
-            if (oid) byId.set(oid, p);
-          }
-          for (const rem of remoteOrders) {
-            const oid = rem.orderId || rem.id;
-            if (oid && !deletedCartOrderIds.includes(oid) && !byId.has(oid)) {
-              byId.set(oid, rem);
-            }
-          }
-          return Array.from(byId.values()).sort((a, b) =>
-            (b.createdAt || '').localeCompare(a.createdAt || '')
-          );
-        });
-      },
-      (err) => console.warn('Orders snapshot fallback:', err)
-    );
-
-    return () => {
-      unsubRegs();
-      unsubInqs();
-      unsubOrders();
-    };
-  }, []);
 
   // New custom showcase brownie state
   const [isAddingCustomBrownie, setIsAddingCustomBrownie] = useState(false);
@@ -836,7 +746,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       await fetch(`/api/inquiries/${encodeURIComponent(inquiryId)}`, {
         method: 'DELETE',
       });
-      await deleteDoc(doc(db, 'inquiries', inquiryId)).catch(() => {});
       triggerSuccess(`Permanently deleted customer inquiry from ${customerName || 'customer'}`);
     } catch (err) {
       console.warn('Delete inquiry error:', err);
@@ -870,11 +779,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: nextStatus, isRead: nextIsRead, readAt }),
       });
-      await updateDoc(doc(db, 'inquiries', inq.id), {
-        status: nextStatus,
-        isRead: nextIsRead,
-        readAt,
-      }).catch(() => {});
       triggerSuccess(nextIsRead ? 'Order marked as Read ✓' : 'Order marked as New / Unread');
     } catch (err) {
       console.warn('Update inquiry read error:', err);
@@ -904,11 +808,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: newStatus, isRead, readAt }),
       });
-      await updateDoc(doc(db, 'inquiries', inquiryId), {
-        status: newStatus,
-        isRead,
-        readAt,
-      }).catch(() => {});
       triggerSuccess(`Order status updated to "${newStatus}"`);
     } catch (err) {
       console.warn('Error updating inquiry status:', err);
@@ -961,7 +860,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       await fetch(`/api/registrations/${encodeURIComponent(regId)}`, {
         method: 'DELETE',
       });
-      await deleteDoc(doc(db, 'class_registrations', regId)).catch(() => {});
       triggerSuccess(`Permanently removed booking for ${studentName || 'student'}`);
     } catch (err) {
       console.warn('Delete registration error:', err);
@@ -999,14 +897,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       const data = await res.json();
       if (res.ok && data?.registration) {
         setAllRegistrations((prev) => [data.registration, ...prev]);
+        triggerSuccess(`Added test booking for ${monthName} ${year} (${randomName})`);
       } else {
-        setAllRegistrations((prev) => [newReg, ...prev]);
+        throw new Error(data?.error || 'Failed to save booking');
       }
-      await setDoc(doc(db, 'class_registrations', newReg.id), newReg).catch(() => {});
-      triggerSuccess(`Added test booking for ${monthName} ${year} (${randomName})`);
-    } catch {
-      setAllRegistrations((prev) => [newReg, ...prev]);
-      triggerSuccess(`Added test booking for ${monthName} ${year}`);
+    } catch (err) {
+      console.warn('Failed to add sample booking:', err);
     }
   };
 
@@ -1068,36 +964,62 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   };
 
   const handleUpdateCartOrderStatus = async (orderId: string, newStatus: string) => {
-    const nowIso = new Date().toISOString();
-    setAllCartOrders((prev) => {
-      const updated = prev.map((o) =>
-        (o.orderId || o.id) === orderId
-          ? { ...o, status: newStatus, updatedAt: nowIso }
-          : o
-      );
-      try {
-        localStorage.setItem('browinegirl_cart_orders_v1', JSON.stringify(updated));
-      } catch {}
-      return updated;
-    });
-
     try {
       const res = await fetch(`/api/orders/${encodeURIComponent(orderId)}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: newStatus }),
       });
-      if (!res.ok) {
-        throw new Error('Failed to update order status in database');
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.success) {
+        throw new Error(data?.error || 'Failed to update order status in database');
       }
-      await updateDoc(doc(db, 'orders', orderId), {
-        status: newStatus,
-        updatedAt: nowIso,
-      }).catch(() => {});
-      triggerSuccess(`Order ${orderId} status permanently updated to "${newStatus}"`);
+      const updatedOrder = data.order;
+      setAllCartOrders((prev) =>
+        prev.map((o) =>
+          (o.orderId || o.id) === orderId
+            ? {
+                ...o,
+                status: updatedOrder?.status ?? newStatus,
+                updatedAt: updatedOrder?.updatedAt ?? new Date().toISOString(),
+              }
+            : o
+        )
+      );
+      triggerSuccess(`Order ${orderId} fulfillment status updated to "${newStatus}"`);
     } catch (err) {
       console.warn('Error updating order status:', err);
-      triggerSuccess(`Order ${orderId} status updated to "${newStatus}"`);
+      triggerSuccess(`Failed to update Order ${orderId} status. Please try again.`);
+    }
+  };
+
+  const handleUpdateCartOrderPaymentStatus = async (orderId: string, newPaymentStatus: string) => {
+    try {
+      const res = await fetch(`/api/orders/${encodeURIComponent(orderId)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paymentStatus: newPaymentStatus }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.success) {
+        throw new Error(data?.error || 'Failed to update payment status in database');
+      }
+      const updatedOrder = data.order;
+      setAllCartOrders((prev) =>
+        prev.map((o) =>
+          (o.orderId || o.id) === orderId
+            ? {
+                ...o,
+                paymentStatus: updatedOrder?.paymentStatus ?? newPaymentStatus,
+                updatedAt: updatedOrder?.updatedAt ?? new Date().toISOString(),
+              }
+            : o
+        )
+      );
+      triggerSuccess(`Order ${orderId} payment status updated to "${newPaymentStatus}"`);
+    } catch (err) {
+      console.warn('Error updating payment status:', err);
+      triggerSuccess(`Failed to update Order ${orderId} payment status. Please try again.`);
     }
   };
 
@@ -1108,20 +1030,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       localStorage.setItem('browinegirl_deleted_cart_orders', JSON.stringify(nextDeleted));
     } catch {}
 
-    setAllCartOrders((prev) => {
-      const updated = prev.filter((o) => (o.orderId || o.id) !== orderId);
-      try {
-        localStorage.setItem('browinegirl_cart_orders_v1', JSON.stringify(updated));
-      } catch {}
-      return updated;
-    });
+    setAllCartOrders((prev) => prev.filter((o) => (o.orderId || o.id) !== orderId));
     setDeletingCartOrderId(null);
 
     try {
       await fetch(`/api/orders/${encodeURIComponent(orderId)}`, {
         method: 'DELETE',
       });
-      await deleteDoc(doc(db, 'orders', orderId)).catch(() => {});
       await fetchAllBackendRecords(false);
       triggerSuccess(`Permanently deleted order ${orderId} from database`);
     } catch {
@@ -4347,16 +4262,25 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                             <select
                                               value={reg.status || 'registered'}
                                               onChange={async (e) => {
+                                                const nextStatus = e.target.value;
                                                 try {
-                                                  await updateDoc(doc(db, 'class_registrations', reg.id), {
-                                                    status: e.target.value,
-                                                  });
+                                                  const res = await fetch(
+                                                    `/api/registrations/${encodeURIComponent(reg.id)}`,
+                                                    {
+                                                      method: 'PATCH',
+                                                      headers: { 'Content-Type': 'application/json' },
+                                                      body: JSON.stringify({ status: nextStatus }),
+                                                    }
+                                                  );
+                                                  if (!res.ok) {
+                                                    throw new Error('Failed to update registration status');
+                                                  }
                                                   setAllRegistrations((prev) =>
                                                     prev.map((item) =>
-                                                      item.id === reg.id ? { ...item, status: e.target.value } : item
+                                                      item.id === reg.id ? { ...item, status: nextStatus } : item
                                                     )
                                                   );
-                                                  triggerSuccess(`Updated status to ${e.target.value}`);
+                                                  triggerSuccess(`Updated status to ${nextStatus}`);
                                                 } catch (err) {
                                                   console.warn(err);
                                                 }
@@ -4472,16 +4396,25 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                   <select
                                     value={reg.status || 'registered'}
                                     onChange={async (e) => {
+                                      const nextStatus = e.target.value;
                                       try {
-                                        await updateDoc(doc(db, 'class_registrations', reg.id), {
-                                          status: e.target.value,
-                                        });
+                                        const res = await fetch(
+                                          `/api/registrations/${encodeURIComponent(reg.id)}`,
+                                          {
+                                            method: 'PATCH',
+                                            headers: { 'Content-Type': 'application/json' },
+                                            body: JSON.stringify({ status: nextStatus }),
+                                          }
+                                        );
+                                        if (!res.ok) {
+                                          throw new Error('Failed to update registration status');
+                                        }
                                         setAllRegistrations((prev) =>
                                           prev.map((item) =>
-                                            item.id === reg.id ? { ...item, status: e.target.value } : item
+                                            item.id === reg.id ? { ...item, status: nextStatus } : item
                                           )
                                         );
-                                        triggerSuccess(`Updated booking status to ${e.target.value}`);
+                                        triggerSuccess(`Updated booking status to ${nextStatus}`);
                                       } catch (err) {
                                         console.warn(err);
                                       }
@@ -4737,20 +4670,55 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                     <span>WhatsApp Customer</span>
                                   </a>
 
-                                  <select
-                                    value={order.status || 'received'}
-                                    onChange={(e) =>
-                                      handleUpdateCartOrderStatus(oid, e.target.value)
-                                    }
-                                    className="p-1.5 px-2.5 bg-[#F8F0E5] border border-[#E8D6C3] rounded-lg text-xs font-bold text-[#3B211B]"
+                                  <div className="inline-flex items-center gap-1.5 bg-[#F8F0E5] border border-[#E8D6C3] rounded-lg px-2 py-1">
+                                    <span className="text-[10px] font-bold uppercase tracking-wider text-[#3B211B]/70">
+                                      Order:
+                                    </span>
+                                    <select
+                                      aria-label={`Order status for ${oid}`}
+                                      value={order.status || 'received'}
+                                      onChange={(e) =>
+                                        handleUpdateCartOrderStatus(oid, e.target.value)
+                                      }
+                                      className="bg-transparent text-xs font-bold text-[#3B211B] focus:outline-none cursor-pointer"
+                                    >
+                                      <option value="received">received</option>
+                                      <option value="baking">baking</option>
+                                      <option value="finishing">finishing</option>
+                                      <option value="out_for_delivery">out_for_delivery</option>
+                                      <option value="delivered">delivered</option>
+                                      <option value="cancelled">cancelled</option>
+                                    </select>
+                                  </div>
+
+                                  <div
+                                    className={`inline-flex items-center gap-1.5 border rounded-lg px-2 py-1 ${
+                                      order.paymentStatus === 'paid'
+                                        ? 'bg-emerald-50 border-emerald-300 text-emerald-900'
+                                        : order.paymentStatus === 'failed'
+                                        ? 'bg-red-50 border-red-300 text-red-900'
+                                        : order.paymentStatus === 'refunded'
+                                        ? 'bg-stone-100 border-stone-300 text-stone-800'
+                                        : 'bg-amber-50 border-amber-300 text-amber-900'
+                                    }`}
                                   >
-                                    <option value="received">received</option>
-                                    <option value="baking">baking</option>
-                                    <option value="finishing">finishing</option>
-                                    <option value="out_for_delivery">out_for_delivery</option>
-                                    <option value="delivered">delivered</option>
-                                    <option value="cancelled">cancelled</option>
-                                  </select>
+                                    <span className="text-[10px] font-bold uppercase tracking-wider opacity-80">
+                                      Payment:
+                                    </span>
+                                    <select
+                                      aria-label={`Payment status for ${oid}`}
+                                      value={order.paymentStatus || 'pending'}
+                                      onChange={(e) =>
+                                        handleUpdateCartOrderPaymentStatus(oid, e.target.value)
+                                      }
+                                      className="bg-transparent text-xs font-bold focus:outline-none cursor-pointer"
+                                    >
+                                      <option value="pending">pending</option>
+                                      <option value="paid">paid</option>
+                                      <option value="failed">failed</option>
+                                      <option value="refunded">refunded</option>
+                                    </select>
+                                  </div>
 
                                   {deletingCartOrderId === oid ? (
                                     <div className="flex items-center gap-1 p-1 bg-red-50 border border-red-300 rounded-lg">
